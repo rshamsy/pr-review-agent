@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Read", "Edit", "Write", "Glob", "Grep",
+      "Bash(python:*)", "Bash(pip:*)", "Bash(pytest:*)",
+      "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)",
+      "Bash(git add:*)", "Bash(git commit:*)",
+      "Bash(ls:*)", "Bash(tree:*)", "Bash(mkdir:*)",
+      "Bash(npm:*)", "Bash(node:*)",
+      "WebSearch", "WebFetch"
+    ],
+    "deny": ["Bash(rm -rf:*)", "Bash(sudo:*)"]
+  }
+}

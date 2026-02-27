@@ -1,0 +1,34 @@
+FROM python:3.11-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js (required for Claude Code)
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs
+
+# Install Claude Code CLI
+RUN npm install -g @anthropic-ai/claude-code
+
+# Create workspace directory
+WORKDIR /workspace
+
+# Set up non-root user for safety
+RUN useradd -m -s /bin/bash claude && chown -R claude:claude /workspace
+
+# Create .claude directory structure for plugins
+RUN mkdir -p /home/claude/.claude/plugins/cache/claude-plugins-official/ralph-loop/latest \
+    && mkdir -p /home/claude/.claude/plugins/marketplaces \
+    && chown -R claude:claude /home/claude/.claude
+
+USER claude
+
+# Copy plugin configuration
+COPY --chown=claude:claude .claude-plugins/ /home/claude/.claude/plugins/
+COPY --chown=claude:claude .claude-plugins/settings.json /home/claude/.claude/settings.json
+
+CMD ["bash"]
