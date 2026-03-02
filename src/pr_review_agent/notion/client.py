@@ -23,6 +23,9 @@ class NotionMCPClient:
     @asynccontextmanager
     async def connect(self) -> AsyncIterator["NotionMCPClient"]:
         """Connect to the Notion MCP server."""
+        if not self._api_key:
+            raise RuntimeError("NOTION_API_KEY is not set")
+
         server_params = StdioServerParameters(
             command="npx",
             args=["-y", "@notionhq/notion-mcp-server"],
@@ -32,14 +35,22 @@ class NotionMCPClient:
             },
         )
 
-        async with stdio_client(server_params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                self._session = session
-                try:
-                    yield self
-                finally:
-                    self._session = None
+        try:
+            async with stdio_client(server_params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    self._session = session
+                    try:
+                        yield self
+                    finally:
+                        self._session = None
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to connect to Notion MCP server: {exc}. "
+                "Check that NOTION_API_KEY is valid and npx is working."
+            ) from exc
 
     async def _call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         """Call an MCP tool and return the result."""

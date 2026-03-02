@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from langgraph.graph import END, StateGraph
 
-from pr_review_agent.graph.conditions import after_context_confirmation
+from pr_review_agent.graph.conditions import after_context_confirmation, after_notion_search
 from pr_review_agent.graph.nodes import (
     analyze_pr_node,
     compute_recommendation_node,
@@ -42,7 +42,14 @@ def build_workflow() -> StateGraph:
     graph.set_entry_point("fetch_pr_data")
     graph.add_edge("fetch_pr_data", "summarize_pr")
     graph.add_edge("summarize_pr", "search_notion")
-    graph.add_edge("search_notion", "score_relevance")
+    graph.add_conditional_edges(
+        "search_notion",
+        after_notion_search,
+        {
+            "score_relevance": "score_relevance",
+            "exit_with_instructions": "exit_with_instructions",
+        },
+    )
     graph.add_edge("score_relevance", "confirm_context")
 
     # Conditional: after user confirms context

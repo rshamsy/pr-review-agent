@@ -11,14 +11,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from pr_review_agent.graph.nodes import (
+    _extract_mcp_error,
     analyze_pr_node,
     compute_recommendation_node,
     confirm_context_node,
     exit_with_instructions_node,
     fetch_pr_data,
+    fetch_specific_page_node,
     format_output_node,
     generate_llm_brief_node,
     score_relevance_node,
+    search_notion_node,
     summarize_pr_node,
 )
 from pr_review_agent.models.brief import IntentDelta, ReviewBrief
@@ -625,3 +628,129 @@ class TestGenerateLlmBriefNode:
             diff_text="diff content",
             model="claude-sonnet-4-20250514",
         )
+
+
+# ===========================================================================
+# Tests for _extract_mcp_error
+# ===========================================================================
+
+class TestExtractMcpError:
+    """Tests for the _extract_mcp_error helper."""
+
+    def test_plain_exception(self):
+        """A plain exception returns its string representation."""
+        exc = RuntimeError("connection refused")
+        assert _extract_mcp_error(exc) == "connection refused"
+
+    def test_exception_group_unwraps_first(self):
+        """An ExceptionGroup is unwrapped to the first sub-exception."""
+        inner = RuntimeError("server crashed")
+        group = ExceptionGroup("TaskGroup", [inner])
+        assert _extract_mcp_error(group) == "server crashed"
+
+    def test_nested_exception_group(self):
+        """Nested ExceptionGroups are recursively unwrapped."""
+        inner = ValueError("bad auth token")
+        inner_group = ExceptionGroup("inner", [inner])
+        outer_group = ExceptionGroup("outer", [inner_group])
+        assert _extract_mcp_error(outer_group) == "bad auth token"
+
+    def test_exception_group_multiple_takes_first(self):
+        """With multiple sub-exceptions, the first one is returned."""
+        exc1 = RuntimeError("first error")
+        exc2 = ValueError("second error")
+        group = ExceptionGroup("multi", [exc1, exc2])
+        assert _extract_mcp_error(group) == "first error"
+
+
+# ===========================================================================
+# Tests for search_notion_node error handling
+# ===========================================================================
+
+class TestSearchNotionNodeErrorHandling:
+    """Tests for search_notion_node MCP error handling."""
+
+    @patch("pr_review_agent.config.get_config")
+    @patch("pr_review_agent.graph.nodes.asyncio.run")
+    def test_exception_group_returns_empty_results(self, mock_run, mock_config):
+        """When asyncio.run raises ExceptionGroup, returns empty results with error."""
+        mock_config.return_value = MagicMock(notion_api_key="test-key")
+        inner = RuntimeError("server process exited")
+        mock_run.side_effect = ExceptionGroup("TaskGroup", [inner])
+
+        state = {"pr_summary": "Test PR summary"}
+        result = search_notion_node(state)
+
+        assert result["notion_results"] == []
+        assert "Notion connection failed" in result["error"]
+        assert "server process exited" in result["error"]
+
+    @patch("pr_review_agent.config.get_config")
+    @patch("pr_review_agent.graph.nodes.asyncio.run")
+    def test_runtime_error_returns_empty_results(self, mock_run, mock_config):
+        """When asyncio.run raises RuntimeError, returns empty results with error."""
+        mock_config.return_value = MagicMock(notion_api_key="test-key")
+        mock_run.side_effect = RuntimeError("NOTION_API_KEY is not set")
+
+        state = {"pr_summary": "Test PR summary"}
+        result = search_notion_node(state)
+
+        assert result["notion_results"] == []
+        assert "NOTION_API_KEY is not set" in result["error"]
+
+    @patch("pr_review_agent.graph.nodes.contextual_search")
+    @patch("pr_review_agent.graph.nodes.NotionMCPClient")
+    @patch("pr_review_agent.config.get_config")
+    @patch("pr_review_agent.graph.nodes.asyncio.run")
+    def test_success_returns_results(self, mock_run, mock_config, mock_client_cls, mock_search):
+        """On success, returns notion_results with no error."""
+        mock_config.return_value = MagicMock(notion_api_key="test-key")
+        mock_run.return_value = [MagicMock()]
+
+        state = {"pr_summary": "Test PR summary"}
+        result = search_notion_node(state)
+
+        assert len(result["notion_results"]) == 1
+        assert "error" not in result
+
+
+# ===========================================================================
+# Tests for fetch_specific_page_node error handling
+# ===========================================================================
+
+class TestFetchSpecificPageNodeErrorHandling:
+    """Tests for fetch_specific_page_node MCP error handling."""
+
+    @patch("pr_review_agent.config.get_config")
+    @patch("pr_review_agent.graph.nodes.asyncio.run")
+    def test_exception_group_returns_empty_scores(self, mock_run, mock_config):
+        """When asyncio.run raises ExceptionGroup, returns empty scores with error."""
+        mock_config.return_value = MagicMock(notion_api_key="test-key")
+        inner = RuntimeError("npx failed")
+        mock_run.side_effect = ExceptionGroup("TaskGroup", [inner])
+
+        state = {
+            "user_provided_url": "https://notion.so/page-123",
+            "pr_summary": "Test PR summary",
+        }
+        result = fetch_specific_page_node(state)
+
+        assert result["relevance_scores"] == []
+        assert "Notion connection failed" in result["error"]
+        assert "npx failed" in result["error"]
+
+    @patch("pr_review_agent.config.get_config")
+    @patch("pr_review_agent.graph.nodes.asyncio.run")
+    def test_runtime_error_returns_empty_scores(self, mock_run, mock_config):
+        """When asyncio.run raises RuntimeError, returns empty scores with error."""
+        mock_config.return_value = MagicMock(notion_api_key="test-key")
+        mock_run.side_effect = RuntimeError("NOTION_API_KEY is not set")
+
+        state = {
+            "user_provided_url": "https://notion.so/page-123",
+            "pr_summary": "Test PR",
+        }
+        result = fetch_specific_page_node(state)
+
+        assert result["relevance_scores"] == []
+        assert "NOTION_API_KEY is not set" in result["error"]

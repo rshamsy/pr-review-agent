@@ -298,3 +298,54 @@ class TestInit:
         """API key defaults to empty string when not set."""
         client = NotionMCPClient()
         assert client._api_key == ""
+
+
+# ---------------------------------------------------------------------------
+# Tests for connect() error handling
+# ---------------------------------------------------------------------------
+
+class TestConnect:
+    """Tests for NotionMCPClient.connect() error handling."""
+
+    @pytest.mark.asyncio
+    async def test_connect_raises_when_no_api_key(self):
+        """connect() raises RuntimeError when API key is empty."""
+        client = NotionMCPClient(notion_api_key="")
+
+        with pytest.raises(RuntimeError, match="NOTION_API_KEY is not set"):
+            async with client.connect():
+                pass
+
+    @pytest.mark.asyncio
+    async def test_connect_raises_when_api_key_none(self):
+        """connect() raises RuntimeError when API key resolves to empty."""
+        with patch.dict("os.environ", {}, clear=True):
+            client = NotionMCPClient(notion_api_key=None)
+
+            with pytest.raises(RuntimeError, match="NOTION_API_KEY is not set"):
+                async with client.connect():
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_connect_wraps_server_startup_failure(self):
+        """connect() wraps server startup exceptions in RuntimeError."""
+        client = NotionMCPClient(notion_api_key="valid-key")
+
+        with patch("pr_review_agent.notion.client.stdio_client") as mock_stdio:
+            mock_stdio.side_effect = OSError("npx not found")
+
+            with pytest.raises(RuntimeError, match="Failed to connect to Notion MCP server"):
+                async with client.connect():
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_connect_preserves_runtime_errors(self):
+        """connect() re-raises RuntimeError directly (does not double-wrap)."""
+        client = NotionMCPClient(notion_api_key="valid-key")
+
+        with patch("pr_review_agent.notion.client.stdio_client") as mock_stdio:
+            mock_stdio.side_effect = RuntimeError("custom runtime error")
+
+            with pytest.raises(RuntimeError, match="custom runtime error"):
+                async with client.connect():
+                    pass

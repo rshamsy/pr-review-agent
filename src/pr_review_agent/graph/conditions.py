@@ -5,6 +5,13 @@ from __future__ import annotations
 from pr_review_agent.graph.state import AgentState
 
 
+def after_notion_search(state: AgentState) -> str:
+    """Route based on Notion search results — skip scoring if search failed."""
+    if state.get("error"):
+        return "exit_with_instructions"
+    return "score_relevance"
+
+
 def after_context_confirmation(state: AgentState) -> str:
     """Route based on user's context confirmation response."""
     choice = state.get("user_confirmation", "exit")

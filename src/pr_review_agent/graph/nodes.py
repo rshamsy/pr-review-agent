@@ -23,6 +23,14 @@ from pr_review_agent.output.terminal import display_results
 console = Console()
 
 
+def _extract_mcp_error(exc: BaseException) -> str:
+    """Extract readable error from MCP SDK ExceptionGroup."""
+    if isinstance(exc, BaseExceptionGroup):
+        for sub in exc.exceptions:
+            return _extract_mcp_error(sub)
+    return str(exc)
+
+
 def fetch_pr_data(state: AgentState) -> dict:
     """Fetch PR data and diff from GitHub."""
     pr_number = state["pr_number"]
@@ -75,7 +83,13 @@ def search_notion_node(state: AgentState) -> dict:
         async with client.connect():
             return await contextual_search(client, state["pr_summary"])
 
-    results = asyncio.run(_search())
+    try:
+        results = asyncio.run(_search())
+    except BaseException as exc:
+        msg = _extract_mcp_error(exc)
+        console.print(f"[red]Notion MCP error: {msg}[/red]")
+        return {"notion_results": [], "error": f"Notion connection failed: {msg}"}
+
     console.print(f"  Found {len(results)} potential match(es)")
 
     return {"notion_results": results}
@@ -128,7 +142,12 @@ def fetch_specific_page_node(state: AgentState) -> dict:
         async with client.connect():
             return await fetch_page_by_url(client, url)
 
-    result = _fetch() if not url else asyncio.run(_fetch())
+    try:
+        result = _fetch() if not url else asyncio.run(_fetch())
+    except BaseException as exc:
+        msg = _extract_mcp_error(exc)
+        console.print(f"[red]Notion MCP error: {msg}[/red]")
+        return {"relevance_scores": [], "error": f"Notion connection failed: {msg}"}
 
     # Create a RelevanceScore for the user-provided page
     from pr_review_agent.models.notion import RelevanceScore
