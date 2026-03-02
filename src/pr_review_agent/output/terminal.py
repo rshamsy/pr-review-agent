@@ -1,0 +1,135 @@
+"""Rich terminal output for review results."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+console = Console()
+
+
+def display_results(state: dict[str, Any], verbose: bool = False) -> None:
+    """Display review results in the terminal using Rich."""
+    brief = state.get("review_brief")
+    recommendation = state.get("recommendation")
+    analysis = state.get("pr_analysis")
+    pr_data = state.get("pr_data")
+
+    if not brief or not recommendation:
+        console.print("[red]No review results to display.[/red]")
+        return
+
+    # Header
+    console.print()
+    verdict_color = {
+        "approve": "green",
+        "request_changes": "red",
+        "needs_discussion": "yellow",
+    }.get(recommendation.verdict, "white")
+
+    console.print(Panel(
+        f"[bold]PR #{pr_data.number}: {pr_data.title}[/bold]\n"
+        f"Author: {pr_data.author} | Branch: {pr_data.branch}\n"
+        f"Classification: {analysis.classification} | "
+        f"+{pr_data.additions}/-{pr_data.deletions}",
+        title="PR Review Brief",
+    ))
+
+    # Summary
+    console.print(f"\n[bold]Summary:[/bold] {brief.summary}\n")
+
+    # Intent vs Implementation deltas table
+    if brief.deltas:
+        table = Table(title="Intent vs Implementation")
+        table.add_column("Aspect", style="cyan", no_wrap=True)
+        table.add_column("Intended", style="white")
+        table.add_column("Implemented", style="white")
+        table.add_column("Status", justify="center")
+
+        status_style = {
+            "match": "[green]MATCH[/green]",
+            "partial": "[yellow]PARTIAL[/yellow]",
+            "missing": "[red]MISSING[/red]",
+            "extra": "[blue]EXTRA[/blue]",
+        }
+
+        for delta in brief.deltas:
+            table.add_row(
+                delta.aspect,
+                delta.intended,
+                delta.implemented,
+                status_style.get(delta.status, delta.status),
+            )
+
+        console.print(table)
+        console.print()
+
+    # What was requested vs implemented
+    if verbose:
+        if brief.what_was_requested:
+            console.print("[bold]What Was Requested:[/bold]")
+            for item in brief.what_was_requested:
+                console.print(f"  - {item}")
+            console.print()
+
+        if brief.what_was_implemented:
+            console.print("[bold]What Was Implemented:[/bold]")
+            for item in brief.what_was_implemented:
+                console.print(f"  - {item}")
+            console.print()
+
+    # Code analysis summary
+    if verbose and analysis:
+        console.print("[bold]Code Analysis:[/bold]")
+        if analysis.services:
+            console.print(f"  Services: {len(analysis.services)}")
+        if analysis.api_routes:
+            console.print(f"  API Routes: {len(analysis.api_routes)}")
+        if analysis.ui_changes:
+            console.print(f"  UI Changes: {len(analysis.ui_changes)}")
+        if analysis.migrations:
+            console.print(f"  Migrations: {len(analysis.migrations)}")
+        if analysis.risks:
+            console.print(f"  Risks: {len(analysis.risks)}")
+        console.print()
+
+    # Positive findings
+    if brief.positive_findings:
+        console.print("[bold green]Positive Findings:[/bold green]")
+        for item in brief.positive_findings:
+            console.print(f"  + {item}")
+        console.print()
+
+    # Key concerns
+    if brief.key_concerns:
+        console.print("[bold yellow]Key Concerns:[/bold yellow]")
+        for item in brief.key_concerns:
+            console.print(f"  ! {item}")
+        console.print()
+
+    # Recommendation verdict
+    console.print(Panel(
+        f"[bold {verdict_color}]{recommendation.verdict.upper().replace('_', ' ')}[/bold {verdict_color}]\n"
+        f"LLM confidence: {brief.llm_confidence:.0%}"
+        + (_format_blockers(recommendation) if recommendation.blockers else "")
+        + (_format_required(recommendation) if recommendation.required else ""),
+        title="Recommendation",
+        border_style=verdict_color,
+    ))
+
+
+def _format_blockers(rec: Any) -> str:
+    lines = "\n\n[bold red]Blockers:[/bold red]"
+    for b in rec.blockers:
+        lines += f"\n  - {b}"
+    return lines
+
+
+def _format_required(rec: Any) -> str:
+    lines = "\n\n[bold yellow]Required:[/bold yellow]"
+    for r in rec.required:
+        lines += f"\n  - {r}"
+    return lines
