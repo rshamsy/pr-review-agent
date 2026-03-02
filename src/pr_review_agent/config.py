@@ -4,9 +4,25 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from pathlib import Path
 
-from pydantic import Field
 from pydantic_settings import BaseSettings
+
+
+def _find_env_files() -> list[Path]:
+    """Return .env file paths to load, in priority order (last wins).
+
+    Searches:
+      1. The package install directory (for dev: the repo root .env)
+      2. ~/.config/pr-review-agent/.env  (user-level config)
+      3. The current working directory .env (project-level override)
+    """
+    candidates = [
+        Path(__file__).resolve().parent.parent.parent / ".env",  # repo root (src/../../../.env)
+        Path.home() / ".config" / "pr-review-agent" / ".env",
+        Path.cwd() / ".env",
+    ]
+    return [p for p in candidates if p.is_file()]
 
 
 class AgentConfig(BaseSettings):
@@ -14,7 +30,13 @@ class AgentConfig(BaseSettings):
     notion_api_key: str = ""
     pr_review_model: str = "claude-sonnet-4-20250514"
 
-    model_config = {"env_prefix": "", "case_sensitive": False}
+    model_config = {
+        "env_prefix": "",
+        "case_sensitive": False,
+        "env_file": _find_env_files(),
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
 
 
 def get_config() -> AgentConfig:
