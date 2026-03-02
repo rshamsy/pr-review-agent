@@ -1,7 +1,15 @@
-"""CLI entry point — Typer-based command-line interface."""
+"""CLI entry point — Typer-based command-line interface.
+
+Supports:
+  pr-review 42              # Review PR #42 (default command)
+  pr-review 42 --post       # Post comment to GitHub
+  pr-review 42 --verbose    # Detailed output
+  pr-review check-config    # Validate env setup
+"""
 
 from __future__ import annotations
 
+import sys
 from typing import Optional
 
 import typer
@@ -85,8 +93,23 @@ def check_config() -> None:
         raise typer.Exit(code=1)
 
 
+def _rewrite_args() -> None:
+    """If the first CLI arg is a bare number, inject 'review' subcommand.
+
+    This allows `pr-review 42` to work as shorthand for `pr-review review 42`.
+    """
+    if len(sys.argv) > 1 and sys.argv[1] not in ("review", "check-config", "--help", "--show-completion", "--install-completion"):
+        # Check if first arg looks like a PR number (possibly negative test)
+        try:
+            int(sys.argv[1])
+            sys.argv.insert(1, "review")
+        except ValueError:
+            pass
+
+
 def main() -> None:
     """Entry point for the CLI."""
+    _rewrite_args()
     app()
 
 
