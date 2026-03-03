@@ -5,12 +5,72 @@ Spawns `npx -y @notionhq/notion-mcp-server` as a child process using StdioClient
 
 from __future__ import annotations
 
+import json
 import os
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+
+# Block types whose content lives under a ``rich_text`` array.
+_RICH_TEXT_BLOCK_TYPES = frozenset({
+    "paragraph",
+    "heading_1",
+    "heading_2",
+    "heading_3",
+    "bulleted_list_item",
+    "numbered_list_item",
+    "to_do",
+    "toggle",
+    "callout",
+    "quote",
+    "code",
+})
+
+
+def _extract_blocks_from_raw(raw_json: str) -> list[dict[str, Any]]:
+    """Parse a block-children JSON string into a list of block dicts.
+
+    Each returned dict has at least ``text``, ``id`` and ``has_children`` keys.
+    """
+    try:
+        data = json.loads(raw_json)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+    results: list[dict[str, Any]] = []
+    if isinstance(data, dict) and "results" in data:
+        items = data["results"]
+    elif isinstance(data, list):
+        items = data
+    else:
+        return []
+
+    for block in items:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type", "")
+        block_id = block.get("id", "")
+        has_children = block.get("has_children", False)
+
+        text = ""
+        if block_type in _RICH_TEXT_BLOCK_TYPES:
+            type_data = block.get(block_type, {})
+            rich_text_list = type_data.get("rich_text", [])
+            text = "".join(
+                rt.get("plain_text", "") for rt in rich_text_list if isinstance(rt, dict)
+            )
+
+        results.append({
+            "text": text,
+            "id": block_id,
+            "has_children": has_children,
+            "type": block_type,
+        })
+
+    return results
 
 
 def _unwrap_exception(exc: BaseException) -> str:
@@ -77,7 +137,6 @@ class NotionMCPClient:
         if hasattr(result, "content"):
             for block in result.content:
                 if hasattr(block, "text"):
-                    import json
                     try:
                         data = json.loads(block.text)
                         if isinstance(data, list):
@@ -95,22 +154,15 @@ class NotionMCPClient:
         return pages
 
     async def get_page_content(self, page_id: str) -> str:
-        """Get the full content of a Notion page."""
-        result = await self._call_tool(
-            "API-retrieve-a-page",
-            {"page_id": page_id},
-        )
+        """Get the full readable content of a Notion page.
 
-        text_parts: list[str] = []
-        if hasattr(result, "content"):
-            for block in result.content:
-                if hasattr(block, "text"):
-                    text_parts.append(block.text)
-
-        return "\n".join(text_parts)
+        Fetches block children recursively (the page body), not just the
+        page metadata returned by ``API-retrieve-a-page``.
+        """
+        return await self._get_blocks_recursive(page_id)
 
     async def get_block_children(self, block_id: str) -> str:
-        """Get children blocks of a Notion block."""
+        """Get children blocks of a Notion block (raw MCP text)."""
         result = await self._call_tool(
             "API-get-block-children",
             {"block_id": block_id},
@@ -123,3 +175,33 @@ class NotionMCPClient:
                     text_parts.append(block.text)
 
         return "\n".join(text_parts)
+
+    async def _get_blocks_recursive(
+        self,
+        block_id: str,
+        depth: int = 0,
+        max_depth: int = 3,
+    ) -> str:
+        """Recursively fetch block children and return readable text.
+
+        Blocks with ``has_children=True`` are expanded up to *max_depth*
+        levels.  Each nesting level adds two-space indentation.
+        """
+        raw = await self.get_block_children(block_id)
+        parsed = _extract_blocks_from_raw(raw)
+
+        indent = "  " * depth
+        lines: list[str] = []
+        for block in parsed:
+            text = block["text"]
+            if text:
+                lines.append(f"{indent}{text}")
+
+            if block["has_children"] and block["id"] and depth < max_depth:
+                nested = await self._get_blocks_recursive(
+                    block["id"], depth + 1, max_depth
+                )
+                if nested:
+                    lines.append(nested)
+
+        return "\n".join(lines)

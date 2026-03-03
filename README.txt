@@ -44,6 +44,12 @@ From your Node project directory, run:
   cd /path/to/pr-review-agent
   pipx install .
 
+Or install from another directory by pointing to the repo path:
+  pipx install /path/to/pr-review-agent
+
+To reinstall (e.g. after pulling updates):
+  pipx install --force /path/to/pr-review-agent
+
 This installs the 'pr-review' command globally, making it available from any
 directory including your Node project.
 
@@ -53,7 +59,15 @@ Alternative (without pipx):
 
 STEP 3: CONFIGURE ENVIRONMENT VARIABLES
 ----------------------------------------
-Create a .env file in YOUR NODE PROJECT root (or set these globally):
+Option A — Use the built-in set-env command (recommended):
+  pr-review set-env ANTHROPIC_API_KEY=sk-ant-...
+  pr-review set-env NOTION_API_KEY=ntn_...
+  pr-review set-env PR_REVIEW_MODEL=claude-sonnet-4-20250514   # optional
+
+This saves values to ~/.config/pr-review-agent/.env so they persist across
+sessions and work from any directory.
+
+Option B — Create a .env file in YOUR NODE PROJECT root (or set these globally):
 
 Required:
   ANTHROPIC_API_KEY=sk-ant-...          # Get from https://console.anthropic.com/
@@ -85,6 +99,10 @@ With options:
 
 Check configuration:
   pr-review check-config
+
+Set env variables persistently (from any directory):
+  pr-review set-env NOTION_API_KEY=ntn_...
+  pr-review set-env ANTHROPIC_API_KEY=sk-ant-...
 
 
 STEP 5: HOW IT WORKS (WORKFLOW)

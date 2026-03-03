@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from pr_review_agent.notion.client import NotionMCPClient
+from pr_review_agent.notion.client import NotionMCPClient, _extract_blocks_from_raw
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +45,7 @@ class TestSearchPages:
         await client.search_pages("supplier payments")
 
         mock_session.call_tool.assert_awaited_once_with(
-            "notion_search_pages",
+            "API-post-search",
             {"query": "supplier payments"},
         )
 
@@ -144,65 +144,98 @@ class TestSearchPages:
 # ---------------------------------------------------------------------------
 
 class TestGetPageContent:
-    """Tests for NotionMCPClient.get_page_content()."""
+    """Tests for NotionMCPClient.get_page_content().
+
+    get_page_content now delegates to _get_blocks_recursive which calls
+    get_block_children (API-get-block-children), NOT API-retrieve-a-page.
+    """
 
     @pytest.mark.asyncio
-    async def test_get_page_content_calls_correct_tool(self):
-        """get_page_content should invoke 'notion_retrieve_page'."""
+    async def test_get_page_content_calls_block_children(self):
+        """get_page_content fetches block children, not page metadata."""
         client = NotionMCPClient(notion_api_key="test-key")
 
+        blocks_json = json.dumps({"results": [
+            {"id": "b1", "type": "paragraph", "has_children": False,
+             "paragraph": {"rich_text": [{"plain_text": "Hello world"}]}},
+        ]})
+
         mock_session = AsyncMock()
-        mock_session.call_tool.return_value = _make_mcp_result(["Page content here"])
+        mock_session.call_tool.return_value = _make_mcp_result([blocks_json])
         client._session = mock_session
 
-        await client.get_page_content("page-id-123")
+        result = await client.get_page_content("page-id-123")
 
         mock_session.call_tool.assert_awaited_once_with(
-            "notion_retrieve_page",
-            {"page_id": "page-id-123"},
+            "API-get-block-children",
+            {"block_id": "page-id-123"},
         )
+        assert "Hello world" in result
 
     @pytest.mark.asyncio
-    async def test_get_page_content_joins_text_blocks(self):
-        """Multiple text blocks are joined with newlines."""
+    async def test_get_page_content_extracts_readable_text(self):
+        """Headings and paragraphs are extracted as readable text."""
+        client = NotionMCPClient(notion_api_key="test-key")
+
+        blocks_json = json.dumps({"results": [
+            {"id": "b1", "type": "heading_1", "has_children": False,
+             "heading_1": {"rich_text": [{"plain_text": "Description"}]}},
+            {"id": "b2", "type": "paragraph", "has_children": False,
+             "paragraph": {"rich_text": [{"plain_text": "Create a user flow."}]}},
+        ]})
+
+        mock_session = AsyncMock()
+        mock_session.call_tool.return_value = _make_mcp_result([blocks_json])
+        client._session = mock_session
+
+        result = await client.get_page_content("page-id-123")
+
+        assert "Description" in result
+        assert "Create a user flow." in result
+
+    @pytest.mark.asyncio
+    async def test_get_page_content_empty_result(self):
+        """When MCP returns no blocks, empty string is returned."""
         client = NotionMCPClient(notion_api_key="test-key")
 
         mock_session = AsyncMock()
         mock_session.call_tool.return_value = _make_mcp_result([
-            "First paragraph",
-            "Second paragraph",
+            json.dumps({"results": []})
         ])
         client._session = mock_session
 
         result = await client.get_page_content("page-id-123")
 
-        assert result == "First paragraph\nSecond paragraph"
+        assert result == ""
 
     @pytest.mark.asyncio
-    async def test_get_page_content_empty_result(self):
-        """When MCP returns no content blocks, empty string is returned."""
+    async def test_get_page_content_recursive_children(self):
+        """Blocks with has_children=True trigger nested fetches."""
         client = NotionMCPClient(notion_api_key="test-key")
 
+        # First call: top-level blocks for the page
+        top_level = json.dumps({"results": [
+            {"id": "toggle-1", "type": "toggle", "has_children": True,
+             "toggle": {"rich_text": [{"plain_text": "Acceptance Criteria"}]}},
+        ]})
+        # Second call: children of toggle-1
+        nested = json.dumps({"results": [
+            {"id": "n1", "type": "paragraph", "has_children": False,
+             "paragraph": {"rich_text": [{"plain_text": "Must verify email."}]}},
+        ]})
+
         mock_session = AsyncMock()
-        mock_session.call_tool.return_value = SimpleNamespace(content=[])
+        mock_session.call_tool.side_effect = [
+            _make_mcp_result([top_level]),
+            _make_mcp_result([nested]),
+        ]
         client._session = mock_session
 
         result = await client.get_page_content("page-id-123")
 
-        assert result == ""
-
-    @pytest.mark.asyncio
-    async def test_get_page_content_no_content_attr(self):
-        """When MCP result has no content attr, empty string is returned."""
-        client = NotionMCPClient(notion_api_key="test-key")
-
-        mock_session = AsyncMock()
-        mock_session.call_tool.return_value = SimpleNamespace()
-        client._session = mock_session
-
-        result = await client.get_page_content("page-id-123")
-
-        assert result == ""
+        assert "Acceptance Criteria" in result
+        assert "Must verify email." in result
+        assert mock_session.call_tool.await_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +247,7 @@ class TestGetBlockChildren:
 
     @pytest.mark.asyncio
     async def test_get_block_children_calls_correct_tool(self):
-        """get_block_children should invoke 'notion_retrieve_block_children'."""
+        """get_block_children should invoke 'API-get-block-children'."""
         client = NotionMCPClient(notion_api_key="test-key")
 
         mock_session = AsyncMock()
@@ -224,7 +257,7 @@ class TestGetBlockChildren:
         await client.get_block_children("block-id-456")
 
         mock_session.call_tool.assert_awaited_once_with(
-            "notion_retrieve_block_children",
+            "API-get-block-children",
             {"block_id": "block-id-456"},
         )
 
@@ -243,6 +276,99 @@ class TestGetBlockChildren:
         result = await client.get_block_children("block-id-456")
 
         assert result == "Child block 1\nChild block 2"
+
+
+# ---------------------------------------------------------------------------
+# Tests for _extract_blocks_from_raw
+# ---------------------------------------------------------------------------
+
+class TestExtractBlocksFromRaw:
+    """Tests for the _extract_blocks_from_raw helper."""
+
+    def test_paragraph_block(self):
+        raw = json.dumps({"results": [
+            {"id": "b1", "type": "paragraph", "has_children": False,
+             "paragraph": {"rich_text": [{"plain_text": "Hello"}]}},
+        ]})
+        blocks = _extract_blocks_from_raw(raw)
+        assert len(blocks) == 1
+        assert blocks[0]["text"] == "Hello"
+        assert blocks[0]["has_children"] is False
+
+    def test_heading_blocks(self):
+        raw = json.dumps({"results": [
+            {"id": "h1", "type": "heading_1", "has_children": False,
+             "heading_1": {"rich_text": [{"plain_text": "Title"}]}},
+            {"id": "h2", "type": "heading_2", "has_children": False,
+             "heading_2": {"rich_text": [{"plain_text": "Subtitle"}]}},
+        ]})
+        blocks = _extract_blocks_from_raw(raw)
+        assert blocks[0]["text"] == "Title"
+        assert blocks[1]["text"] == "Subtitle"
+
+    def test_list_items(self):
+        raw = json.dumps({"results": [
+            {"id": "li1", "type": "bulleted_list_item", "has_children": False,
+             "bulleted_list_item": {"rich_text": [{"plain_text": "Bullet one"}]}},
+            {"id": "li2", "type": "numbered_list_item", "has_children": False,
+             "numbered_list_item": {"rich_text": [{"plain_text": "Number one"}]}},
+        ]})
+        blocks = _extract_blocks_from_raw(raw)
+        assert blocks[0]["text"] == "Bullet one"
+        assert blocks[1]["text"] == "Number one"
+
+    def test_multiple_rich_text_segments(self):
+        """rich_text with multiple segments are concatenated."""
+        raw = json.dumps({"results": [
+            {"id": "b1", "type": "paragraph", "has_children": False,
+             "paragraph": {"rich_text": [
+                 {"plain_text": "Hello "},
+                 {"plain_text": "world"},
+             ]}},
+        ]})
+        blocks = _extract_blocks_from_raw(raw)
+        assert blocks[0]["text"] == "Hello world"
+
+    def test_empty_rich_text(self):
+        raw = json.dumps({"results": [
+            {"id": "b1", "type": "paragraph", "has_children": False,
+             "paragraph": {"rich_text": []}},
+        ]})
+        blocks = _extract_blocks_from_raw(raw)
+        assert blocks[0]["text"] == ""
+
+    def test_unknown_block_type(self):
+        """Unknown block types produce empty text but are still returned."""
+        raw = json.dumps({"results": [
+            {"id": "b1", "type": "divider", "has_children": False},
+        ]})
+        blocks = _extract_blocks_from_raw(raw)
+        assert len(blocks) == 1
+        assert blocks[0]["text"] == ""
+
+    def test_has_children_true(self):
+        raw = json.dumps({"results": [
+            {"id": "t1", "type": "toggle", "has_children": True,
+             "toggle": {"rich_text": [{"plain_text": "Expand me"}]}},
+        ]})
+        blocks = _extract_blocks_from_raw(raw)
+        assert blocks[0]["has_children"] is True
+        assert blocks[0]["id"] == "t1"
+
+    def test_invalid_json(self):
+        assert _extract_blocks_from_raw("not json") == []
+
+    def test_empty_results(self):
+        assert _extract_blocks_from_raw(json.dumps({"results": []})) == []
+
+    def test_list_format(self):
+        """Handles raw list format (no 'results' wrapper)."""
+        raw = json.dumps([
+            {"id": "b1", "type": "paragraph", "has_children": False,
+             "paragraph": {"rich_text": [{"plain_text": "Direct list"}]}},
+        ])
+        blocks = _extract_blocks_from_raw(raw)
+        assert blocks[0]["text"] == "Direct list"
 
 
 # ---------------------------------------------------------------------------
