@@ -42,6 +42,7 @@ class APIRouteInfo(BaseModel):
     is_new: bool = False
     lines_of_logic: int = 0
     has_business_logic: bool = False
+    has_tests: bool = False
 
 
 class UIChangeInfo(BaseModel):

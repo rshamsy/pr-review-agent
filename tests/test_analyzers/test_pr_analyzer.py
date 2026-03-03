@@ -280,6 +280,33 @@ class TestDetectAPIRoutes:
         endpoints = {r.endpoint for r in routes}
         assert endpoints == {"/users", "/orders"}
 
+    def test_has_tests_true_when_test_in_pr(self):
+        """Route is marked has_tests=True when a matching test file exists in the PR."""
+        files = [
+            FileChange(filename="app/api/auth/verify-otp/route.ts", status="added", additions=60, patch="+logic"),
+            FileChange(filename="tests/lib/services/verify-otp.route.test.ts", status="added", additions=40, patch="+test"),
+        ]
+        routes = detect_api_routes(files)
+        assert len(routes) == 1
+        assert routes[0].has_tests is True
+
+    def test_has_tests_false_when_no_matching_test(self):
+        files = [
+            FileChange(filename="app/api/auth/verify-otp/route.ts", status="added", additions=60, patch="+logic"),
+        ]
+        routes = detect_api_routes(files)
+        assert len(routes) == 1
+        assert routes[0].has_tests is False
+
+    def test_has_tests_matches_by_directory_name(self):
+        """Test matching uses the parent directory name, not the filename 'route'."""
+        files = [
+            FileChange(filename="app/api/payments/route.ts", status="added", additions=40, patch="+code"),
+            FileChange(filename="tests/api/payments.test.ts", status="added", additions=20, patch="+test"),
+        ]
+        routes = detect_api_routes(files)
+        assert routes[0].has_tests is True
+
 
 # ---------------------------------------------------------------------------
 # detect_ui_changes
@@ -587,6 +614,22 @@ class TestFindMissingTests:
         assert len(missing) == 1
         assert missing[0].reason == "api_route_no_test"
         assert missing[0].severity == "high"  # lines_of_logic > 50
+
+    def test_does_not_flag_api_route_with_tests(self):
+        """API route with has_tests=True should not be flagged as missing tests."""
+        routes = [
+            APIRouteInfo(
+                path="app/api/auth/verify-otp/route.ts",
+                endpoint="/auth/verify-otp",
+                methods=["POST"],
+                is_new=True,
+                lines_of_logic=60,
+                has_business_logic=True,
+                has_tests=True,
+            ),
+        ]
+        missing = find_missing_tests([], routes, [])
+        assert len(missing) == 0
 
     def test_does_not_flag_api_route_without_business_logic(self):
         routes = [

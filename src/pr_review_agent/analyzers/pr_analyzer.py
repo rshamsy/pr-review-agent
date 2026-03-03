@@ -124,6 +124,28 @@ def _is_test_for_service(test_path: str, service_basename: str) -> bool:
     return any(re.search(p, test_path) for p in TEST_PATTERNS) and service_basename in test_path
 
 
+def _is_test_for_route(test_path: str, route_path: str) -> bool:
+    """Check if a file path is a test for the given API route.
+
+    For routes like ``app/api/auth/verify-otp/route.ts`` the meaningful
+    identifier is the parent directory name (``verify-otp``), not the
+    filename (``route``).  We also check the full endpoint path segments
+    so that ``tests/app/api/auth/verify-otp/route.test.ts`` matches too.
+    """
+    if not any(re.search(p, test_path) for p in TEST_PATTERNS):
+        return False
+
+    # Extract the meaningful identifier: parent directory of route file
+    parts = route_path.split("/")
+    # For "app/api/auth/verify-otp/route.ts" → identifier = "verify-otp"
+    if len(parts) >= 2:
+        route_identifier = parts[-2]
+    else:
+        route_identifier = parts[0]
+
+    return route_identifier in test_path
+
+
 def detect_api_routes(files: list[FileChange]) -> list[APIRouteInfo]:
     """Detect API route changes."""
     routes: list[APIRouteInfo] = []
@@ -150,6 +172,11 @@ def detect_api_routes(files: list[FileChange]) -> list[APIRouteInfo]:
             or ("if (" in content and "throw" in content)
         )
 
+        # Check if a test exists in the PR files for this route
+        has_tests = any(
+            _is_test_for_route(f.filename, file.filename) for f in files
+        )
+
         routes.append(APIRouteInfo(
             path=file.filename,
             endpoint=endpoint,
@@ -157,6 +184,7 @@ def detect_api_routes(files: list[FileChange]) -> list[APIRouteInfo]:
             is_new=is_new,
             lines_of_logic=lines_of_logic,
             has_business_logic=has_business_logic,
+            has_tests=has_tests,
         ))
 
     return routes
@@ -264,6 +292,8 @@ def find_missing_tests(
 
     for route in api_routes:
         if not route.has_business_logic:
+            continue
+        if route.has_tests:
             continue
 
         missing.append(MissingTest(
