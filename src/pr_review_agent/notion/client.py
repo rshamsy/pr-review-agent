@@ -13,6 +13,14 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 
+def _unwrap_exception(exc: BaseException) -> str:
+    """Unwrap ExceptionGroup to get the real error message."""
+    if isinstance(exc, BaseExceptionGroup):
+        for sub in exc.exceptions:
+            return _unwrap_exception(sub)
+    return str(exc)
+
+
 class NotionMCPClient:
     """Async client for Notion via MCP server."""
 
@@ -46,9 +54,10 @@ class NotionMCPClient:
                         self._session = None
         except RuntimeError:
             raise
-        except Exception as exc:
+        except BaseException as exc:
+            detail = _unwrap_exception(exc)
             raise RuntimeError(
-                f"Failed to connect to Notion MCP server: {exc}. "
+                f"Failed to connect to Notion MCP server: {detail}. "
                 "Check that NOTION_API_KEY is valid and npx is working."
             ) from exc
 
@@ -62,7 +71,7 @@ class NotionMCPClient:
 
     async def search_pages(self, query: str) -> list[dict[str, Any]]:
         """Search Notion pages by query text."""
-        result = await self._call_tool("notion_search_pages", {"query": query})
+        result = await self._call_tool("API-post-search", {"query": query})
 
         pages: list[dict[str, Any]] = []
         if hasattr(result, "content"):
@@ -88,7 +97,7 @@ class NotionMCPClient:
     async def get_page_content(self, page_id: str) -> str:
         """Get the full content of a Notion page."""
         result = await self._call_tool(
-            "notion_retrieve_page",
+            "API-retrieve-a-page",
             {"page_id": page_id},
         )
 
@@ -103,7 +112,7 @@ class NotionMCPClient:
     async def get_block_children(self, block_id: str) -> str:
         """Get children blocks of a Notion block."""
         result = await self._call_tool(
-            "notion_retrieve_block_children",
+            "API-get-block-children",
             {"block_id": block_id},
         )
 

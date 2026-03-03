@@ -7,7 +7,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pr_review_agent.config import AgentConfig, _find_env_files, get_config, validate_config
+from pr_review_agent.config import (
+    AgentConfig,
+    KNOWN_ENV_VARS,
+    USER_ENV_FILE,
+    _find_env_files,
+    get_config,
+    update_user_env,
+    validate_config,
+)
 
 
 # ===== _find_env_files =====
@@ -336,3 +344,86 @@ class TestValidateConfig:
             result = validate_config()
 
         assert isinstance(result, list)
+
+
+# ===== update_user_env =====
+
+
+class TestUpdateUserEnv:
+    """Tests for the update_user_env helper."""
+
+    def test_creates_file_and_directory(self, tmp_path):
+        """Creates parent dirs and the .env file when they don't exist."""
+        env_file = tmp_path / "sub" / "dir" / ".env"
+        with patch("pr_review_agent.config.USER_ENV_FILE", env_file):
+            result = update_user_env("NOTION_API_KEY", "ntn_test")
+
+        assert result == env_file
+        assert env_file.exists()
+        assert env_file.read_text() == "NOTION_API_KEY=ntn_test\n"
+
+    def test_appends_new_key(self, tmp_path):
+        """Appends a new key to an existing .env file."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("ANTHROPIC_API_KEY=sk-ant-old\n")
+        with patch("pr_review_agent.config.USER_ENV_FILE", env_file):
+            update_user_env("NOTION_API_KEY", "ntn_new")
+
+        lines = env_file.read_text().splitlines()
+        assert "ANTHROPIC_API_KEY=sk-ant-old" in lines
+        assert "NOTION_API_KEY=ntn_new" in lines
+
+    def test_replaces_existing_key(self, tmp_path):
+        """Replaces the value of an already-present key."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("NOTION_API_KEY=old_value\nANTHROPIC_API_KEY=keep\n")
+        with patch("pr_review_agent.config.USER_ENV_FILE", env_file):
+            update_user_env("NOTION_API_KEY", "new_value")
+
+        lines = env_file.read_text().splitlines()
+        assert "NOTION_API_KEY=new_value" in lines
+        assert "ANTHROPIC_API_KEY=keep" in lines
+        # Ensure old value is gone
+        assert "NOTION_API_KEY=old_value" not in lines
+
+    def test_preserves_comments(self, tmp_path):
+        """Comments and blank lines are preserved."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("# My config\nANTHROPIC_API_KEY=sk-ant\n")
+        with patch("pr_review_agent.config.USER_ENV_FILE", env_file):
+            update_user_env("NOTION_API_KEY", "ntn_val")
+
+        content = env_file.read_text()
+        assert "# My config" in content
+        assert "NOTION_API_KEY=ntn_val" in content
+
+    def test_rejects_unknown_key(self):
+        """Raises ValueError for keys not in KNOWN_ENV_VARS."""
+        with pytest.raises(ValueError, match="Unknown env var"):
+            update_user_env("UNKNOWN_KEY", "some_value")
+
+    def test_value_containing_equals(self, tmp_path):
+        """Values with '=' signs are stored correctly."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("")
+        with patch("pr_review_agent.config.USER_ENV_FILE", env_file):
+            update_user_env("ANTHROPIC_API_KEY", "sk-ant=with=equals")
+
+        assert "ANTHROPIC_API_KEY=sk-ant=with=equals" in env_file.read_text()
+
+    def test_key_uppercased(self, tmp_path):
+        """Lowercase key is normalised to uppercase."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("")
+        with patch("pr_review_agent.config.USER_ENV_FILE", env_file):
+            update_user_env("notion_api_key", "ntn_val")
+
+        assert "NOTION_API_KEY=ntn_val" in env_file.read_text()
+
+    def test_returns_path(self, tmp_path):
+        """Returns the path of the written file."""
+        env_file = tmp_path / ".env"
+        with patch("pr_review_agent.config.USER_ENV_FILE", env_file):
+            result = update_user_env("PR_REVIEW_MODEL", "claude-opus-4-20250514")
+
+        assert result == env_file

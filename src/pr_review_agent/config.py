@@ -8,6 +8,51 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings
 
+KNOWN_ENV_VARS: frozenset[str] = frozenset({
+    "ANTHROPIC_API_KEY",
+    "NOTION_API_KEY",
+    "PR_REVIEW_MODEL",
+})
+
+USER_ENV_FILE: Path = Path.home() / ".config" / "pr-review-agent" / ".env"
+
+
+def update_user_env(key: str, value: str) -> Path:
+    """Write *key=value* to the user-level .env file.
+
+    - Creates ``~/.config/pr-review-agent/`` if it doesn't exist.
+    - Replaces an existing line for *key* in-place, or appends a new one.
+    - Returns the path that was written to.
+
+    Raises ``ValueError`` if *key* is not in ``KNOWN_ENV_VARS``.
+    """
+    key = key.upper()
+    if key not in KNOWN_ENV_VARS:
+        raise ValueError(
+            f"Unknown env var: {key}. "
+            f"Allowed: {', '.join(sorted(KNOWN_ENV_VARS))}"
+        )
+
+    USER_ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    new_line = f"{key}={value}"
+    if USER_ENV_FILE.exists():
+        lines = USER_ENV_FILE.read_text().splitlines()
+        replaced = False
+        for i, line in enumerate(lines):
+            stripped = line.lstrip()
+            if stripped.startswith(f"{key}="):
+                lines[i] = new_line
+                replaced = True
+                break
+        if not replaced:
+            lines.append(new_line)
+        USER_ENV_FILE.write_text("\n".join(lines) + "\n")
+    else:
+        USER_ENV_FILE.write_text(new_line + "\n")
+
+    return USER_ENV_FILE
+
 
 def _find_env_files() -> list[Path]:
     """Return .env file paths to load, in priority order (last wins).

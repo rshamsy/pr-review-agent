@@ -90,6 +90,12 @@ class TestRewriteArgs:
             _rewrite_args()
             assert mock_sys.argv == ["pr-review", "foobar"]
 
+    def test_set_env_not_rewritten(self) -> None:
+        with patch("pr_review_agent.cli.sys") as mock_sys:
+            mock_sys.argv = ["pr-review", "set-env", "NOTION_API_KEY=ntn_test"]
+            _rewrite_args()
+            assert mock_sys.argv == ["pr-review", "set-env", "NOTION_API_KEY=ntn_test"]
+
 
 # ===========================================================================
 # check-config command
@@ -308,3 +314,51 @@ class TestReviewCommand:
         mock_workflow.invoke.assert_called_once()
         call_args = mock_workflow.invoke.call_args[0][0]
         assert call_args["model"] == "claude-opus-4-20250514"
+
+
+# ===========================================================================
+# set-env command
+# ===========================================================================
+
+
+class TestSetEnvCommand:
+    """Tests for the set-env subcommand."""
+
+    def test_success(self, tmp_path: MagicMock) -> None:
+        env_file = tmp_path / ".env"
+        with patch("pr_review_agent.config.USER_ENV_FILE", env_file):
+            result = runner.invoke(app, ["set-env", "NOTION_API_KEY=ntn_test"])
+        assert result.exit_code == 0
+        assert "Saved" in result.output
+        assert "NOTION_API_KEY" in result.output
+        assert env_file.read_text().strip() == "NOTION_API_KEY=ntn_test"
+
+    def test_missing_equals(self) -> None:
+        result = runner.invoke(app, ["set-env", "NOTION_API_KEY"])
+        assert result.exit_code == 1
+        assert "missing '='" in result.output
+
+    def test_empty_value(self) -> None:
+        result = runner.invoke(app, ["set-env", "NOTION_API_KEY="])
+        assert result.exit_code == 1
+        assert "empty" in result.output.lower()
+
+    def test_unknown_key(self) -> None:
+        result = runner.invoke(app, ["set-env", "UNKNOWN_KEY=val"])
+        assert result.exit_code == 1
+        assert "Unknown env var" in result.output
+
+    def test_lowercase_key_uppercased(self, tmp_path: MagicMock) -> None:
+        env_file = tmp_path / ".env"
+        with patch("pr_review_agent.config.USER_ENV_FILE", env_file):
+            result = runner.invoke(app, ["set-env", "notion_api_key=ntn_val"])
+        assert result.exit_code == 0
+        assert "NOTION_API_KEY" in result.output
+        assert "NOTION_API_KEY=ntn_val" in env_file.read_text()
+
+    def test_value_with_equals(self, tmp_path: MagicMock) -> None:
+        env_file = tmp_path / ".env"
+        with patch("pr_review_agent.config.USER_ENV_FILE", env_file):
+            result = runner.invoke(app, ["set-env", "ANTHROPIC_API_KEY=sk-ant=extra=signs"])
+        assert result.exit_code == 0
+        assert "ANTHROPIC_API_KEY=sk-ant=extra=signs" in env_file.read_text()

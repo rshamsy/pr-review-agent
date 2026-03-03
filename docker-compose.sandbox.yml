@@ -9,6 +9,7 @@ services:
       - ~/.claude:/home/claude/.claude
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - NOTION_API_KEY=${NOTION_API_KEY}
       - CLAUDE_CODE_SKIP_ONBOARDING=1
     working_dir: /workspace
     stdin_open: true
