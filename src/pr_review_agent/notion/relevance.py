@@ -59,8 +59,11 @@ Respond with a JSON object:
   "score": <0-10 integer>,
   "explanation": "<brief explanation>",
   "key_matches": ["<aspects that align>"],
-  "gaps": ["<aspects missing from the Notion page>"]
+  "gaps": ["<aspects missing from the Notion page>"],
+  "relevant_excerpts": ["<verbatim quote from the Notion page that is relevant>", ...]
 }
+
+Include 1-3 short verbatim excerpts (1-2 sentences each) from the Notion page that are most relevant to this PR. These should be direct quotes that help the user quickly judge relevance.
 
 Scoring guide:
 - 9-10: Clearly the spec/requirements for this exact PR
@@ -84,7 +87,7 @@ def score_relevance(
 
     Uses Claude Haiku for cost efficiency — this is just a relevance check.
     """
-    llm = ChatAnthropic(model=model, max_tokens=512, temperature=0)
+    llm = ChatAnthropic(model=model, max_tokens=1024, temperature=0)
 
     # Truncate content to avoid excessive tokens
     truncated_content = notion_content[:8000]
@@ -123,4 +126,5 @@ Notion Page Content:
         explanation=data.get("explanation", ""),
         key_matches=data.get("key_matches", []),
         gaps=data.get("gaps", []),
+        relevant_excerpts=data.get("relevant_excerpts", []),
     )

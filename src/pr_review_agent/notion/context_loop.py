@@ -15,6 +15,16 @@ from pr_review_agent.models.notion import NotionContext, RelevanceScore
 console = Console()
 
 
+def _format_excerpts(excerpts: list[str]) -> str:
+    """Format relevant excerpts for display in a result panel."""
+    if not excerpts:
+        return ""
+    lines = "[bold]Relevant excerpts:[/bold]\n"
+    for excerpt in excerpts:
+        lines += f"  [italic]> {excerpt}[/italic]\n"
+    return lines + "\n"
+
+
 def confirm_context(
     scored_results: list[RelevanceScore],
 ) -> tuple[str, list[NotionContext], str | None]:
@@ -37,25 +47,19 @@ def confirm_context(
         ))
         return _prompt_no_results()
 
-    # Show top result
-    top = scored_results[0]
+    # Show all results with full details
     console.print()
-    console.print(Panel(
-        f"[bold]{top.title}[/bold]\n"
-        f"Relevance: {top.score}/10\n"
-        f"URL: {top.url}\n\n"
-        f"[dim]{top.explanation}[/dim]\n\n"
-        f"[bold]Key matches:[/bold] {', '.join(top.key_matches) if top.key_matches else 'None identified'}\n"
-        f"[bold]Gaps:[/bold] {', '.join(top.gaps) if top.gaps else 'None identified'}\n\n"
-        f"[dim]Content preview:[/dim]\n{top.content[:500]}...",
-        title="Notion Context Found",
-    ))
-
-    # Show other results if available
-    if len(scored_results) > 1:
-        console.print("\n[dim]Other results:[/dim]")
-        for i, result in enumerate(scored_results[1:], 2):
-            console.print(f"  {i}. [{result.score}/10] {result.title}")
+    for i, result in enumerate(scored_results, 1):
+        console.print(Panel(
+            f"[bold]{result.title}[/bold]\n"
+            f"Relevance: {result.score}/10\n"
+            f"URL: {result.url}\n\n"
+            f"[dim]{result.explanation}[/dim]\n\n"
+            + _format_excerpts(result.relevant_excerpts)
+            + f"[bold]Key matches:[/bold] {', '.join(result.key_matches) if result.key_matches else 'None identified'}\n"
+            f"[bold]Gaps:[/bold] {', '.join(result.gaps) if result.gaps else 'None identified'}",
+            title=f"Result {i}",
+        ))
 
     console.print()
     console.print(

@@ -135,6 +135,7 @@ class TestScoreRelevance:
             "explanation": "This page clearly describes the payment tracking feature.",
             "key_matches": ["payment tracking", "CSV export"],
             "gaps": [],
+            "relevant_excerpts": ["Supplier payments must be tracked with CSV export capability."],
         })
         mock_llm = MagicMock()
         mock_llm.invoke.return_value = _mock_llm_response(llm_response)
@@ -156,6 +157,7 @@ class TestScoreRelevance:
         assert "payment tracking" in result.key_matches
         assert result.gaps == []
         assert "payment tracking feature" in result.explanation
+        assert result.relevant_excerpts == ["Supplier payments must be tracked with CSV export capability."]
 
     @patch("pr_review_agent.notion.relevance.ChatAnthropic")
     def test_low_relevance_score(self, mock_chat_cls):
@@ -353,7 +355,7 @@ class TestScoreRelevance:
 
         mock_chat_cls.assert_called_once_with(
             model="claude-sonnet-4-20250514",
-            max_tokens=512,
+            max_tokens=1024,
             temperature=0,
         )
 
@@ -375,6 +377,55 @@ class TestScoreRelevance:
         )
 
         assert result.score == 0.0
+
+    @patch("pr_review_agent.notion.relevance.ChatAnthropic")
+    def test_relevant_excerpts_parsed(self, mock_chat_cls):
+        """Relevant excerpts are parsed from the LLM JSON response."""
+        llm_response = json.dumps({
+            "score": 8,
+            "explanation": "Highly relevant page.",
+            "key_matches": ["auth flow"],
+            "gaps": [],
+            "relevant_excerpts": [
+                "Users must authenticate via OAuth2 before accessing the dashboard.",
+                "Session tokens expire after 24 hours.",
+            ],
+        })
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = _mock_llm_response(llm_response)
+        mock_chat_cls.return_value = mock_llm
+
+        result = score_relevance(
+            pr_summary="Add OAuth2 authentication",
+            notion_content="Auth spec content...",
+            notion_page_id="page-auth",
+            notion_title="Auth Spec",
+        )
+
+        assert result.relevant_excerpts == [
+            "Users must authenticate via OAuth2 before accessing the dashboard.",
+            "Session tokens expire after 24 hours.",
+        ]
+
+    @patch("pr_review_agent.notion.relevance.ChatAnthropic")
+    def test_missing_relevant_excerpts_defaults_to_empty(self, mock_chat_cls):
+        """When relevant_excerpts is missing from JSON, defaults to empty list."""
+        llm_response = json.dumps({
+            "score": 5,
+            "explanation": "Moderate match",
+            "key_matches": [],
+            "gaps": [],
+        })
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = _mock_llm_response(llm_response)
+        mock_chat_cls.return_value = mock_llm
+
+        result = score_relevance(
+            pr_summary="test",
+            notion_content="test content",
+        )
+
+        assert result.relevant_excerpts == []
 
     @patch("pr_review_agent.notion.relevance.ChatAnthropic")
     def test_response_content_as_list_raises(self, mock_chat_cls):

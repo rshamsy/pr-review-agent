@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
+from rich.panel import Panel
+
 from pr_review_agent.models.notion import NotionContext, RelevanceScore
 from pr_review_agent.notion.context_loop import confirm_context, display_exit_instructions
 
@@ -30,6 +32,7 @@ def _make_scored_results(count: int = 1) -> list[RelevanceScore]:
             explanation=f"Explanation for page {i}",
             key_matches=[f"match-{i}-a", f"match-{i}-b"],
             gaps=[f"gap-{i}-a"],
+            relevant_excerpts=[f"Excerpt from page {i} about the feature."],
         ))
     return results
 
@@ -224,7 +227,6 @@ class TestDisplayExitInstructions:
         assert mock_console.print.called
         # Verify a Panel was printed
         call_args = mock_console.print.call_args
-        from rich.panel import Panel
         assert isinstance(call_args[0][0], Panel)
 
 
@@ -246,3 +248,46 @@ class TestMultipleResults:
         assert len(contexts) == 1
         assert contexts[0].page_id == "page-0"  # top result
         assert contexts[0].title == "Test Page 0"
+
+    @patch("pr_review_agent.notion.context_loop.Prompt.ask", return_value="1")
+    @patch("pr_review_agent.notion.context_loop.console")
+    def test_all_results_display_url_and_explanation(self, mock_console, mock_ask):
+        """All results (not just #1) display URL, explanation, and excerpts."""
+        scored = _make_scored_results(3)
+        confirm_context(scored)
+
+        # Collect all printed Panel content
+        panel_contents = []
+        for call_args in mock_console.print.call_args_list:
+            if call_args[0] and isinstance(call_args[0][0], Panel):
+                renderable = call_args[0][0].renderable
+                if isinstance(renderable, str):
+                    panel_contents.append(renderable)
+
+        # Should have 3 result panels
+        assert len(panel_contents) == 3
+
+        # Each panel should contain URL, explanation, and excerpts
+        for i, content in enumerate(panel_contents):
+            assert f"https://notion.so/page-{i}" in content
+            assert f"Explanation for page {i}" in content
+            assert f"Excerpt from page {i}" in content
+
+    @patch("pr_review_agent.notion.context_loop.Prompt.ask", return_value="1")
+    @patch("pr_review_agent.notion.context_loop.console")
+    def test_results_display_key_matches_and_gaps(self, mock_console, mock_ask):
+        """All results show key matches and gaps."""
+        scored = _make_scored_results(2)
+        confirm_context(scored)
+
+        panel_contents = []
+        for call_args in mock_console.print.call_args_list:
+            if call_args[0] and isinstance(call_args[0][0], Panel):
+                renderable = call_args[0][0].renderable
+                if isinstance(renderable, str):
+                    panel_contents.append(renderable)
+
+        assert len(panel_contents) == 2
+        for i, content in enumerate(panel_contents):
+            assert f"match-{i}-a" in content
+            assert f"gap-{i}-a" in content

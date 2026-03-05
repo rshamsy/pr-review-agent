@@ -21,6 +21,7 @@ class RelevanceScore(BaseModel):
     explanation: str = ""
     key_matches: list[str] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
+    relevant_excerpts: list[str] = Field(default_factory=list)
 
 
 class NotionContext(BaseModel):
