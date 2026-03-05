@@ -11,6 +11,7 @@ from pydantic_settings import BaseSettings
 KNOWN_ENV_VARS: frozenset[str] = frozenset({
     "ANTHROPIC_API_KEY",
     "NOTION_API_KEY",
+    "NOTION_CONTEXT_PAGES",
     "PR_REVIEW_MODEL",
 })
 
@@ -73,7 +74,14 @@ def _find_env_files() -> list[Path]:
 class AgentConfig(BaseSettings):
     anthropic_api_key: str = ""
     notion_api_key: str = ""
+    notion_context_pages: str = ""
     pr_review_model: str = "claude-sonnet-4-20250514"
+
+    def get_context_page_urls(self) -> list[str]:
+        """Split and strip the comma-separated NOTION_CONTEXT_PAGES value."""
+        if not self.notion_context_pages:
+            return []
+        return [u.strip() for u in self.notion_context_pages.split(",") if u.strip()]
 
     model_config = {
         "env_prefix": "",

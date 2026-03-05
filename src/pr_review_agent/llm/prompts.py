@@ -15,11 +15,15 @@ Diff (truncated):
 
 
 REVIEW_BRIEF_SYSTEM = """You are a senior technical reviewer. You are given:
-1. The **intended feature** (from a Notion spec/requirements page)
-2. The **PR analysis** (automated analysis of what changed)
-3. The **PR diff** (actual code changes)
+1. The **intended feature** (from one or more Notion spec/requirements pages)
+2. The **CI/CD status** (automated test and build results)
+3. The **PR analysis** (automated analysis of what changed, including detailed migration info)
+4. The **PR diff** (actual code changes)
 
 Your job: Compare what was requested vs what was implemented. Produce a structured review brief.
+
+Consider CI failures as potential blockers. Analyze migration details for data safety risks.
+If tests are failing, mention them in key_concerns.
 
 Respond with a JSON object matching this exact schema:
 {{
@@ -51,17 +55,20 @@ Respond ONLY with the JSON object."""
 
 
 REVIEW_BRIEF_USER = """## Notion Intent (Feature Spec)
-Title: {notion_title}
-Description: {notion_description}
-Requirements:
-{notion_requirements}
+{notion_section}
+
+## CI/CD Status
+{ci_status_summary}
 
 ## PR Analysis
 Classification: {classification}
 Services changed: {services_summary}
 API routes: {api_routes_summary}
 UI changes: {ui_changes_summary}
-Migrations: {migrations_summary}
+
+Migrations:
+{migrations_summary}
+
 Missing tests: {missing_tests_summary}
 Risks: {risks_summary}
 

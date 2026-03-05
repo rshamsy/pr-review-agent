@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from pr_review_agent.models.notion import NotionSearchResult
+from pr_review_agent.models.notion import NotionContext, NotionSearchResult
 from pr_review_agent.notion.client import NotionMCPClient
+from pr_review_agent.notion.relevance import extract_relevant_sections
 
 
 async def contextual_search(
@@ -58,6 +59,44 @@ async def fetch_page_by_url(client: NotionMCPClient, url: str) -> NotionSearchRe
     )
 
 
+async def fetch_supplementary_context(
+    client: NotionMCPClient,
+    page_urls: list[str],
+    pr_summary: str,
+    model: str = "claude-haiku-4-5-20251001",
+) -> list[NotionContext]:
+    """Fetch pre-configured supplementary pages and extract relevant sections.
+
+    For each URL, fetches the page content, then uses Haiku to extract
+    only the sections relevant to the PR. Pages with no relevant content
+    are skipped.
+    """
+    contexts: list[NotionContext] = []
+    for url in page_urls:
+        try:
+            page_id = _page_id_from_url(url)
+            content = await client.get_page_content(page_id)
+
+            extracted = extract_relevant_sections(
+                pr_summary=pr_summary,
+                page_content=content,
+                page_title=f"Page {page_id[:8]}...",
+                model=model,
+            )
+            if extracted:
+                contexts.append(NotionContext(
+                    page_id=page_id,
+                    page_url=url,
+                    title=f"Page {page_id[:8]}...",
+                    description="Supplementary context page",
+                    raw_content=extracted,
+                ))
+        except Exception:
+            # Skip pages that fail to fetch
+            continue
+    return contexts
+
+
 def _extract_page_id(item: dict) -> str:
     """Extract page ID from a Notion search result."""
     return item.get("id", item.get("page_id", ""))
@@ -74,11 +113,29 @@ def _extract_title(item: dict) -> str:
                 if isinstance(prop, dict) and "title" in prop:
                     titles = prop["title"]
                     if isinstance(titles, list) and titles:
-                        return titles[0].get("plain_text", "")
+                        first = titles[0]
+                        return (
+                            first.get("plain_text", "")
+                            or first.get("text", {}).get("content", "")
+                        )
                 elif isinstance(prop, str):
                     return prop
 
-    return item.get("title", item.get("name", "Untitled"))
+    # Fallback to top-level title/name — handle rich text list format
+    raw_title = item.get("title", item.get("name", "Untitled"))
+    if isinstance(raw_title, list) and raw_title:
+        # Rich text objects: [{"type": "text", "text": {"content": "..."}, ...}]
+        parts = []
+        for block in raw_title:
+            if isinstance(block, dict):
+                parts.append(
+                    block.get("plain_text", "")
+                    or block.get("text", {}).get("content", "")
+                )
+        return "".join(parts) or "Untitled"
+    if isinstance(raw_title, str):
+        return raw_title
+    return "Untitled"
 
 
 def _extract_url(item: dict) -> str:

@@ -50,6 +50,7 @@ class TestWorkflowHappyPath:
     @patch("pr_review_agent.graph.nodes.display_results")
     @patch("pr_review_agent.graph.nodes.format_review_markdown")
     @patch("pr_review_agent.graph.nodes.generate_brief")
+    @patch("pr_review_agent.graph.nodes.generate_testing_checklist")
     @patch("pr_review_agent.graph.nodes.detect_migrations")
     @patch("pr_review_agent.graph.nodes.analyze_pr")
     @patch("pr_review_agent.graph.nodes.confirm_context")
@@ -68,6 +69,7 @@ class TestWorkflowHappyPath:
         mock_confirm_context,
         mock_analyze_pr,
         mock_detect_migrations,
+        mock_generate_checklist,
         mock_generate_brief,
         mock_format_markdown,
         mock_display_results,
@@ -119,7 +121,7 @@ class TestWorkflowHappyPath:
             requirements=["test feature"],
             raw_content="Feature content",
         )
-        mock_confirm_context.return_value = ("confirmed", notion_context, None)
+        mock_confirm_context.return_value = ("confirmed", [notion_context], None)
 
         analysis = PRAnalysis(
             classification="minor",
@@ -128,6 +130,7 @@ class TestWorkflowHappyPath:
         )
         mock_analyze_pr.return_value = analysis
         mock_detect_migrations.return_value = []
+        mock_generate_checklist.return_value = []
 
         brief = ReviewBrief(
             summary="Good PR",
@@ -147,9 +150,10 @@ class TestWorkflowHappyPath:
 
             mock_cfg = MagicMock()
             mock_cfg.notion_api_key = "test-key"
+            mock_cfg.get_context_page_urls.return_value = []
             mock_config.return_value = mock_cfg
 
-            mock_asyncio_run.return_value = [search_result]
+            mock_asyncio_run.return_value = ([search_result], [])
 
             graph = build_workflow()
             result = graph.invoke({
@@ -209,7 +213,7 @@ class TestWorkflowExitPath:
         mock_score_relevance.return_value = scored
 
         # User exits
-        mock_confirm_context.return_value = ("exit", None, None)
+        mock_confirm_context.return_value = ("exit", [], None)
 
         with patch("pr_review_agent.config.get_config") as mock_config, \
              patch("pr_review_agent.graph.nodes.NotionMCPClient") as mock_client_cls, \
@@ -217,8 +221,9 @@ class TestWorkflowExitPath:
 
             mock_cfg = MagicMock()
             mock_cfg.notion_api_key = "test-key"
+            mock_cfg.get_context_page_urls.return_value = []
             mock_config.return_value = mock_cfg
-            mock_asyncio_run.return_value = [search_result]
+            mock_asyncio_run.return_value = ([search_result], [])
 
             graph = build_workflow()
             result = graph.invoke({

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from pr_review_agent.models.notion import NotionSearchResult
+from pr_review_agent.models.notion import NotionContext, NotionSearchResult
 from pr_review_agent.notion.search import (
     _extract_page_id,
     _extract_title,
@@ -17,6 +17,7 @@ from pr_review_agent.notion.search import (
     _page_id_from_url,
     contextual_search,
     fetch_page_by_url,
+    fetch_supplementary_context,
 )
 
 
@@ -337,3 +338,79 @@ class TestFetchPageByUrl:
 
         assert result.title.startswith("Page ")
         assert result.title.endswith("...")
+
+
+# ===========================================================================
+# Tests for fetch_supplementary_context
+# ===========================================================================
+
+class TestFetchSupplementaryContext:
+    """Tests for fetch_supplementary_context() with mocked dependencies."""
+
+    @pytest.mark.asyncio
+    @patch("pr_review_agent.notion.search.extract_relevant_sections")
+    async def test_happy_path_returns_contexts(self, mock_extract):
+        """When pages have relevant content, NotionContext objects are returned."""
+        mock_client = AsyncMock()
+        mock_client.get_page_content.return_value = "Full page content with notes"
+        mock_extract.return_value = "Relevant section about payments"
+
+        url = "https://www.notion.so/workspace/Standup-00112233445566778899aabbccddeeff"
+        contexts = await fetch_supplementary_context(
+            mock_client, [url], "Fix payment tracking bug",
+        )
+
+        assert len(contexts) == 1
+        assert isinstance(contexts[0], NotionContext)
+        assert contexts[0].raw_content == "Relevant section about payments"
+        assert contexts[0].description == "Supplementary context page"
+
+    @pytest.mark.asyncio
+    @patch("pr_review_agent.notion.search.extract_relevant_sections")
+    async def test_no_relevant_content_skips_page(self, mock_extract):
+        """When Haiku finds nothing relevant, the page is skipped."""
+        mock_client = AsyncMock()
+        mock_client.get_page_content.return_value = "Unrelated content"
+        mock_extract.return_value = None
+
+        url = "https://www.notion.so/workspace/Random-00112233445566778899aabbccddeeff"
+        contexts = await fetch_supplementary_context(
+            mock_client, [url], "Fix payment tracking bug",
+        )
+
+        assert contexts == []
+
+    @pytest.mark.asyncio
+    @patch("pr_review_agent.notion.search.extract_relevant_sections")
+    async def test_fetch_failure_skips_page(self, mock_extract):
+        """When fetching a page fails, it is skipped gracefully."""
+        mock_client = AsyncMock()
+        mock_client.get_page_content.side_effect = Exception("Network error")
+
+        url = "https://www.notion.so/workspace/Broken-00112233445566778899aabbccddeeff"
+        contexts = await fetch_supplementary_context(
+            mock_client, [url], "Fix something",
+        )
+
+        assert contexts == []
+        mock_extract.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("pr_review_agent.notion.search.extract_relevant_sections")
+    async def test_multiple_urls_mixed_results(self, mock_extract):
+        """With multiple URLs, only pages with relevant content are included."""
+        mock_client = AsyncMock()
+        mock_client.get_page_content.return_value = "Some content"
+        # First page relevant, second not
+        mock_extract.side_effect = ["Relevant bits", None]
+
+        urls = [
+            "https://www.notion.so/workspace/A-00112233445566778899aabbccddeeff",
+            "https://www.notion.so/workspace/B-00112233445566778899aabbccddeef0",
+        ]
+        contexts = await fetch_supplementary_context(
+            mock_client, urls, "Fix bug",
+        )
+
+        assert len(contexts) == 1
+        assert contexts[0].raw_content == "Relevant bits"

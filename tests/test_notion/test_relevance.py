@@ -1,4 +1,4 @@
-"""Tests for pr_review_agent.notion.relevance — relevance scoring with Claude.
+"""Tests for pr_review_agent.notion.relevance — relevance scoring and extraction with Claude.
 
 Mocks ChatAnthropic to avoid real LLM calls.
 """
@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from pr_review_agent.models.notion import RelevanceScore
-from pr_review_agent.notion.relevance import score_relevance
+from pr_review_agent.notion.relevance import extract_relevant_sections, score_relevance
 
 
 # ---------------------------------------------------------------------------
@@ -27,7 +27,101 @@ def _mock_llm_response(content: str) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# Tests
+# Tests for extract_relevant_sections
+# ---------------------------------------------------------------------------
+
+class TestExtractRelevantSections:
+    """Tests for extract_relevant_sections()."""
+
+    @patch("pr_review_agent.notion.relevance.ChatAnthropic")
+    def test_returns_relevant_text(self, mock_chat_cls):
+        """When Haiku finds relevant content, it returns the extracted text."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = _mock_llm_response("## Standup Notes\n- Fixed payment bug")
+        mock_chat_cls.return_value = mock_llm
+
+        result = extract_relevant_sections(
+            pr_summary="Fix payment tracking bug",
+            page_content="## Standup Notes\n- Fixed payment bug\n## Other\n- Unrelated stuff",
+            page_title="Standup Notes",
+        )
+
+        assert result is not None
+        assert "payment bug" in result
+
+    @patch("pr_review_agent.notion.relevance.ChatAnthropic")
+    def test_returns_none_when_not_relevant(self, mock_chat_cls):
+        """When Haiku responds with NONE, returns None."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = _mock_llm_response("NONE")
+        mock_chat_cls.return_value = mock_llm
+
+        result = extract_relevant_sections(
+            pr_summary="Fix payment tracking bug",
+            page_content="## Meeting Notes\n- Discussed lunch plans",
+            page_title="Random Notes",
+        )
+
+        assert result is None
+
+    @patch("pr_review_agent.notion.relevance.ChatAnthropic")
+    def test_returns_none_for_empty_page(self, mock_chat_cls):
+        """Empty page content returns None without calling LLM."""
+        result = extract_relevant_sections(
+            pr_summary="Fix something",
+            page_content="",
+        )
+
+        assert result is None
+        mock_chat_cls.assert_not_called()
+
+    @patch("pr_review_agent.notion.relevance.ChatAnthropic")
+    def test_returns_none_for_whitespace_only_page(self, mock_chat_cls):
+        """Whitespace-only page content returns None without calling LLM."""
+        result = extract_relevant_sections(
+            pr_summary="Fix something",
+            page_content="   \n  \t  ",
+        )
+
+        assert result is None
+        mock_chat_cls.assert_not_called()
+
+    @patch("pr_review_agent.notion.relevance.ChatAnthropic")
+    def test_uses_specified_model(self, mock_chat_cls):
+        """The model parameter is forwarded to ChatAnthropic."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = _mock_llm_response("NONE")
+        mock_chat_cls.return_value = mock_llm
+
+        extract_relevant_sections(
+            pr_summary="test",
+            page_content="some content",
+            model="claude-sonnet-4-20250514",
+        )
+
+        mock_chat_cls.assert_called_once_with(
+            model="claude-sonnet-4-20250514",
+            max_tokens=4096,
+            temperature=0,
+        )
+
+    @patch("pr_review_agent.notion.relevance.ChatAnthropic")
+    def test_case_insensitive_none_response(self, mock_chat_cls):
+        """Case variations of NONE are treated as no relevant content."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = _mock_llm_response("  none  ")
+        mock_chat_cls.return_value = mock_llm
+
+        result = extract_relevant_sections(
+            pr_summary="test",
+            page_content="some content",
+        )
+
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Tests for score_relevance
 # ---------------------------------------------------------------------------
 
 class TestScoreRelevance:

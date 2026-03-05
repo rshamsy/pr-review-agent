@@ -46,10 +46,11 @@ def summarize_pr(pr_data: PRData, diff_text: str, model: str = "claude-sonnet-4-
 
 
 def generate_brief(
-    notion_context: NotionContext,
+    notion_contexts: list[NotionContext],
     pr_data: PRData,
     analysis: PRAnalysis,
     diff_text: str,
+    ci_status: dict | None = None,
     model: str = "claude-sonnet-4-20250514",
 ) -> ReviewBrief:
     """Generate a structured review brief comparing intent vs implementation."""
@@ -61,9 +62,8 @@ def generate_brief(
         truncated_diff += f"\n\n... (truncated, {len(diff_text) - MAX_DIFF_CHARS} chars omitted)"
 
     user_msg = REVIEW_BRIEF_USER.format(
-        notion_title=notion_context.title,
-        notion_description=notion_context.description,
-        notion_requirements=_format_list(notion_context.requirements),
+        notion_section=_format_notion_contexts(notion_contexts),
+        ci_status_summary=_format_ci_status(ci_status or {}),
         classification=analysis.classification,
         services_summary=_format_services(analysis),
         api_routes_summary=_format_api_routes(analysis),
@@ -98,6 +98,29 @@ def generate_brief(
             )
 
     return ReviewBrief(**data)
+
+
+def _format_notion_contexts(contexts: list[NotionContext]) -> str:
+    """Format one or more NotionContext objects for the prompt."""
+    if not contexts:
+        return "No Notion context provided."
+
+    if len(contexts) == 1:
+        ctx = contexts[0]
+        return (
+            f"Title: {ctx.title}\n"
+            f"Description: {ctx.description}\n"
+            f"Requirements:\n{_format_list(ctx.requirements)}"
+        )
+
+    parts: list[str] = []
+    for i, ctx in enumerate(contexts, 1):
+        parts.append(
+            f"### Page {i}: {ctx.title}\n"
+            f"Description: {ctx.description}\n"
+            f"Requirements:\n{_format_list(ctx.requirements)}"
+        )
+    return "\n\n".join(parts)
 
 
 def _format_list(items: list[str]) -> str:
@@ -135,7 +158,29 @@ def _format_ui_changes(analysis: PRAnalysis) -> str:
 def _format_migrations(analysis: PRAnalysis) -> str:
     if not analysis.migrations:
         return "None"
-    return f"{len(analysis.migrations)} migration(s)"
+    parts: list[str] = []
+    for m in analysis.migrations:
+        ops = ", ".join(f"{op.type} on {op.table}" for op in m.operations)
+        destructive = [op for op in m.operations if op.destructive]
+        line = f"- {m.name}: {ops} (risk: {m.risk_level}, rollback: {m.rollback_complexity})"
+        if destructive:
+            line += f" [DESTRUCTIVE: {', '.join(op.type for op in destructive)}]"
+        if m.warnings:
+            line += f"\n  Warnings: {'; '.join(m.warnings)}"
+        parts.append(line)
+    return "\n".join(parts)
+
+
+def _format_ci_status(ci_status: dict) -> str:
+    if not ci_status or not ci_status.get("checks"):
+        return "No CI data available"
+    lines: list[str] = []
+    for check in ci_status["checks"]:
+        status_label = {"success": "PASS", "failure": "FAIL", "pending": "PENDING"}.get(
+            check.get("status", ""), "?"
+        )
+        lines.append(f"- [{status_label}] {check.get('name', 'unknown')}")
+    return "\n".join(lines)
 
 
 def _format_missing_tests(analysis: PRAnalysis) -> str:

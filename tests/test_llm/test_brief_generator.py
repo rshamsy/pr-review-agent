@@ -10,7 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pr_review_agent.llm.brief_generator import MAX_DIFF_CHARS, generate_brief, summarize_pr
+from pr_review_agent.llm.brief_generator import MAX_DIFF_CHARS, _format_ci_status, _format_migrations, generate_brief, summarize_pr
+from pr_review_agent.models.migration import MigrationInfo, MigrationOperation
 from pr_review_agent.models.brief import ReviewBrief
 from pr_review_agent.models.notion import NotionContext
 from pr_review_agent.models.pr import FileChange, PRAnalysis, PRData
@@ -202,7 +203,7 @@ class TestGenerateBrief:
         mock_llm.invoke.return_value = mock_response
         mock_chat_cls.return_value = mock_llm
 
-        result = generate_brief(notion_context, pr_data, analysis, "diff text")
+        result = generate_brief([notion_context], pr_data, analysis, "diff text")
 
         assert isinstance(result, ReviewBrief)
         assert result.summary == "This PR adds supplier payment tracking with CSV export."
@@ -224,7 +225,7 @@ class TestGenerateBrief:
         mock_chat_cls.return_value = mock_llm
 
         long_diff = "a" * (MAX_DIFF_CHARS + 10_000)
-        generate_brief(notion_context, pr_data, analysis, long_diff)
+        generate_brief([notion_context], pr_data, analysis, long_diff)
 
         call_args = mock_llm.invoke.call_args[0][0]
         human_msg = call_args[1].content
@@ -246,7 +247,7 @@ class TestGenerateBrief:
         mock_chat_cls.return_value = mock_llm
 
         short_diff = "short diff content"
-        generate_brief(notion_context, pr_data, analysis, short_diff)
+        generate_brief([notion_context], pr_data, analysis, short_diff)
 
         call_args = mock_llm.invoke.call_args[0][0]
         human_msg = call_args[1].content
@@ -276,7 +277,7 @@ class TestGenerateBrief:
         mock_llm.invoke.return_value = mock_response
         mock_chat_cls.return_value = mock_llm
 
-        result = generate_brief(notion_context, pr_data, analysis, "diff")
+        result = generate_brief([notion_context], pr_data, analysis, "diff")
 
         assert isinstance(result, ReviewBrief)
         assert result.summary == "Extracted brief"
@@ -293,7 +294,7 @@ class TestGenerateBrief:
         mock_llm.invoke.return_value = mock_response
         mock_chat_cls.return_value = mock_llm
 
-        result = generate_brief(notion_context, pr_data, analysis, "diff")
+        result = generate_brief([notion_context], pr_data, analysis, "diff")
 
         assert isinstance(result, ReviewBrief)
         assert "Failed to parse" in result.summary
@@ -312,7 +313,7 @@ class TestGenerateBrief:
         mock_llm.invoke.return_value = mock_response
         mock_chat_cls.return_value = mock_llm
 
-        generate_brief(notion_context, pr_data, analysis, "diff")
+        generate_brief([notion_context], pr_data, analysis, "diff")
 
         call_args = mock_llm.invoke.call_args[0][0]
         human_msg = call_args[1].content
@@ -332,7 +333,7 @@ class TestGenerateBrief:
         mock_chat_cls.return_value = mock_llm
 
         generate_brief(
-            notion_context, pr_data, analysis, "diff",
+            [notion_context], pr_data, analysis, "diff",
             model="claude-opus-4-20250514",
         )
 
@@ -380,7 +381,7 @@ class TestGenerateBrief:
         mock_llm.invoke.return_value = mock_response
         mock_chat_cls.return_value = mock_llm
 
-        generate_brief(notion_context, pr_data, analysis, "diff")
+        generate_brief([notion_context], pr_data, analysis, "diff")
 
         call_args = mock_llm.invoke.call_args[0][0]
         human_msg = call_args[1].content
@@ -388,3 +389,202 @@ class TestGenerateBrief:
         assert "pay" in human_msg
         assert "/pay" in human_msg
         assert "GET" in human_msg
+
+    @patch("pr_review_agent.llm.brief_generator.ChatAnthropic")
+    def test_multi_page_prompt(
+        self, mock_chat_cls, pr_data, analysis, valid_brief_json
+    ):
+        """With multiple NotionContext objects, the prompt contains numbered sections."""
+        ctx1 = NotionContext(
+            page_id="p1", title="Feature Spec", description="Main spec",
+            requirements=["Req A"], raw_content="content1",
+        )
+        ctx2 = NotionContext(
+            page_id="p2", title="Standup Notes", description="Notes",
+            requirements=["Req B"], raw_content="content2",
+        )
+
+        mock_llm = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = valid_brief_json
+        mock_llm.invoke.return_value = mock_response
+        mock_chat_cls.return_value = mock_llm
+
+        generate_brief([ctx1, ctx2], pr_data, analysis, "diff")
+
+        call_args = mock_llm.invoke.call_args[0][0]
+        human_msg = call_args[1].content
+        assert "### Page 1: Feature Spec" in human_msg
+        assert "### Page 2: Standup Notes" in human_msg
+        assert "Req A" in human_msg
+        assert "Req B" in human_msg
+
+    @patch("pr_review_agent.llm.brief_generator.ChatAnthropic")
+    def test_empty_contexts(
+        self, mock_chat_cls, pr_data, analysis, valid_brief_json
+    ):
+        """With no notion contexts, the prompt says no context provided."""
+        mock_llm = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = valid_brief_json
+        mock_llm.invoke.return_value = mock_response
+        mock_chat_cls.return_value = mock_llm
+
+        generate_brief([], pr_data, analysis, "diff")
+
+        call_args = mock_llm.invoke.call_args[0][0]
+        human_msg = call_args[1].content
+        assert "No Notion context provided" in human_msg
+
+
+# ---------------------------------------------------------------------------
+# Tests for _format_migrations (detailed output)
+# ---------------------------------------------------------------------------
+
+class TestFormatMigrations:
+    """Tests for _format_migrations() detailed output."""
+
+    def test_no_migrations(self):
+        """Returns 'None' when no migrations."""
+        analysis = PRAnalysis(classification="minor")
+        assert _format_migrations(analysis) == "None"
+
+    def test_single_migration_with_operations(self):
+        """Single migration shows operations, risk, rollback."""
+        migration = MigrationInfo(
+            path="prisma/migrations/20240101_add_users/migration.sql",
+            name="add_users",
+            risk_level="low",
+            operations=[
+                MigrationOperation(type="CREATE_TABLE", table="users", details="CREATE TABLE users", destructive=False),
+            ],
+            warnings=[],
+            rollback_complexity="easy",
+        )
+        analysis = PRAnalysis(classification="major", migrations=[migration])
+        result = _format_migrations(analysis)
+        assert "add_users" in result
+        assert "CREATE_TABLE on users" in result
+        assert "risk: low" in result
+        assert "rollback: easy" in result
+
+    def test_destructive_migration_flagged(self):
+        """Destructive operations are marked."""
+        migration = MigrationInfo(
+            path="migrations/drop.sql",
+            name="drop_old",
+            risk_level="high",
+            operations=[
+                MigrationOperation(type="DROP_TABLE", table="old_data", details="DROP TABLE old_data", destructive=True),
+            ],
+            warnings=["DROP TABLE will permanently delete data"],
+            rollback_complexity="impossible",
+        )
+        analysis = PRAnalysis(classification="major", migrations=[migration])
+        result = _format_migrations(analysis)
+        assert "DESTRUCTIVE" in result
+        assert "DROP_TABLE" in result
+        assert "permanently delete" in result
+
+    def test_multiple_migrations(self):
+        """Multiple migrations each get their own line."""
+        m1 = MigrationInfo(
+            path="m1.sql", name="m1", risk_level="low",
+            operations=[MigrationOperation(type="CREATE_TABLE", table="a", details="", destructive=False)],
+            warnings=[], rollback_complexity="easy",
+        )
+        m2 = MigrationInfo(
+            path="m2.sql", name="m2", risk_level="medium",
+            operations=[MigrationOperation(type="ADD_COLUMN", table="b", details="", destructive=False)],
+            warnings=[], rollback_complexity="medium",
+        )
+        analysis = PRAnalysis(classification="major", migrations=[m1, m2])
+        result = _format_migrations(analysis)
+        assert "m1" in result
+        assert "m2" in result
+        assert result.count("\n- ") == 1  # Two lines, one newline between
+
+
+# ---------------------------------------------------------------------------
+# Tests for _format_ci_status
+# ---------------------------------------------------------------------------
+
+class TestFormatCiStatus:
+    """Tests for _format_ci_status()."""
+
+    def test_empty_ci_status(self):
+        """Returns fallback when no CI data."""
+        assert _format_ci_status({}) == "No CI data available"
+
+    def test_none_ci_status(self):
+        """Returns fallback for None."""
+        assert _format_ci_status(None) == "No CI data available"
+
+    def test_no_checks(self):
+        """Returns fallback when checks list is empty."""
+        assert _format_ci_status({"checks": []}) == "No CI data available"
+
+    def test_passing_checks(self):
+        """Passing checks show PASS label."""
+        ci = {"checks": [{"name": "lint", "status": "success"}, {"name": "tests", "status": "success"}]}
+        result = _format_ci_status(ci)
+        assert "[PASS] lint" in result
+        assert "[PASS] tests" in result
+
+    def test_failing_checks(self):
+        """Failing checks show FAIL label."""
+        ci = {"checks": [{"name": "tests", "status": "failure"}]}
+        result = _format_ci_status(ci)
+        assert "[FAIL] tests" in result
+
+    def test_mixed_checks(self):
+        """Mixed statuses display correctly."""
+        ci = {"checks": [
+            {"name": "lint", "status": "success"},
+            {"name": "tests", "status": "failure"},
+            {"name": "deploy", "status": "pending"},
+        ]}
+        result = _format_ci_status(ci)
+        assert "[PASS] lint" in result
+        assert "[FAIL] tests" in result
+        assert "[PENDING] deploy" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests for CI status in generate_brief
+# ---------------------------------------------------------------------------
+
+class TestGenerateBriefCiStatus:
+    """Tests for CI status being passed through to the LLM prompt."""
+
+    @patch("pr_review_agent.llm.brief_generator.ChatAnthropic")
+    def test_ci_status_in_prompt(self, mock_chat_cls, pr_data, analysis, valid_brief_json):
+        """CI status data appears in the LLM prompt."""
+        mock_llm = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = valid_brief_json
+        mock_llm.invoke.return_value = mock_response
+        mock_chat_cls.return_value = mock_llm
+
+        ci = {"checks": [{"name": "ESLint", "status": "success"}, {"name": "Vitest", "status": "failure"}]}
+        generate_brief([], pr_data, analysis, "diff", ci_status=ci)
+
+        call_args = mock_llm.invoke.call_args[0][0]
+        human_msg = call_args[1].content
+        assert "[PASS] ESLint" in human_msg
+        assert "[FAIL] Vitest" in human_msg
+
+    @patch("pr_review_agent.llm.brief_generator.ChatAnthropic")
+    def test_no_ci_status(self, mock_chat_cls, pr_data, analysis, valid_brief_json):
+        """When ci_status is None, prompt shows 'No CI data available'."""
+        mock_llm = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = valid_brief_json
+        mock_llm.invoke.return_value = mock_response
+        mock_chat_cls.return_value = mock_llm
+
+        generate_brief([], pr_data, analysis, "diff", ci_status=None)
+
+        call_args = mock_llm.invoke.call_args[0][0]
+        human_msg = call_args[1].content
+        assert "No CI data available" in human_msg
