@@ -10,7 +10,13 @@ from pr_review_agent.analyzers.checklist_generator import generate_testing_check
 from pr_review_agent.analyzers.migration_analyzer import detect_migrations
 from pr_review_agent.analyzers.pr_analyzer import analyze_pr
 from pr_review_agent.github.comment import post_pr_comment
-from pr_review_agent.github.pr_client import fetch_ci_checks, fetch_diff, fetch_pr
+from pr_review_agent.github.pr_client import (
+    fetch_ci_checks,
+    fetch_diff,
+    fetch_file_content,
+    fetch_pr,
+    fetch_repo_test_files,
+)
 from pr_review_agent.graph.state import AgentState
 from pr_review_agent.llm.brief_generator import generate_brief, summarize_pr
 from pr_review_agent.models.review import ReviewRecommendation
@@ -47,6 +53,12 @@ def fetch_pr_data(state: AgentState) -> dict:
     except Exception:
         pass
 
+    repo_test_files: list[str] = []
+    try:
+        repo_test_files = fetch_repo_test_files()
+    except Exception:
+        pass
+
     console.print(
         f"  PR: [cyan]{pr_data.title}[/cyan] by {pr_data.author}\n"
         f"  {len(pr_data.files)} files, +{pr_data.additions}/-{pr_data.deletions}"
@@ -56,6 +68,7 @@ def fetch_pr_data(state: AgentState) -> dict:
         "pr_data": pr_data,
         "diff_text": diff_text,
         "ci_status": ci_status,
+        "repo_test_files": repo_test_files,
         "status": "running",
     }
 
@@ -186,8 +199,18 @@ def analyze_pr_node(state: AgentState) -> dict:
     """Run automated code analysis on the PR."""
     console.print("[bold]Analyzing PR code changes...[/bold]")
 
+    from pr_review_agent.config import get_config
+    config = get_config()
+
     pr_data = state["pr_data"]
-    analysis = analyze_pr(pr_data)
+    repo_test_files = state.get("repo_test_files") or None
+    analysis = analyze_pr(
+        pr_data,
+        repo_test_files=repo_test_files,
+        fetch_content=fetch_file_content,
+        verification_mode=config.test_verification_mode,
+        verification_model=config.test_verification_model,
+    )
 
     # Detect migrations from diff
     migrations = detect_migrations(pr_data.files)

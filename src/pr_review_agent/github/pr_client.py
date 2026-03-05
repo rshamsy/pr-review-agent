@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import subprocess
 
 from pr_review_agent.models.pr import CICheck, CIStatus, FileChange, PRData
+
+DEFAULT_TEST_PREFIXES = ("tests/", "test/", "__tests__/")
 
 
 def _run_gh(args: list[str], timeout: int = 30) -> str:
@@ -92,3 +95,39 @@ def fetch_ci_checks(pr_number: int) -> CIStatus:
 
     all_passed = all(c.status == "success" for c in checks) if checks else False
     return CIStatus(all_passed=all_passed, checks=checks)
+
+
+def fetch_repo_test_files(
+    directory_prefixes: tuple[str, ...] = DEFAULT_TEST_PREFIXES,
+) -> list[str]:
+    """Fetch all test file paths from the repo tree.
+
+    Uses ``gh api`` to get the full recursive tree at HEAD and filters
+    to blobs whose paths start with one of *directory_prefixes*.
+    """
+    raw = _run_gh([
+        "api", "repos/{owner}/{repo}/git/trees/HEAD",
+        "-q", ".tree[] | select(.type==\"blob\") | .path",
+        "--paginate",
+    ], timeout=30)
+
+    paths: list[str] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if line and any(line.startswith(prefix) for prefix in directory_prefixes):
+            paths.append(line)
+    return paths
+
+
+def fetch_file_content(path: str) -> str:
+    """Fetch and decode the content of a single file from the repo.
+
+    Uses ``gh api`` to retrieve the file via the contents endpoint and
+    decodes the base64-encoded content.
+    """
+    raw = _run_gh([
+        "api", f"repos/{{owner}}/{{repo}}/contents/{path}",
+    ], timeout=30)
+    data = json.loads(raw)
+    content_b64 = data.get("content", "")
+    return base64.b64decode(content_b64).decode("utf-8")

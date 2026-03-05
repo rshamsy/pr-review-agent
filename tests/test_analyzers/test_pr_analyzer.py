@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from pr_review_agent.analyzers.pr_analyzer import (
+    _find_candidate_test_files,
+    _verify_test_content,
+    _verify_test_content_advanced,
     analyze_pr,
     assess_risks,
+    check_test_coverage,
     classify_pr,
     detect_api_routes,
     detect_service_changes,
@@ -942,3 +948,269 @@ class TestAnalyzePR:
         # New service with financial logic, no tests -> critical risk
         assert any(r.level == "critical" for r in analysis.risks)
         assert any(m.severity == "critical" for m in analysis.missing_tests)
+
+
+# ---------------------------------------------------------------------------
+# check_test_coverage
+# ---------------------------------------------------------------------------
+
+
+class TestCheckTestCoverage:
+    """Tests for check_test_coverage()."""
+
+    def test_found_in_pr_files_service(self):
+        """Test found in PR files for a service — tier 1."""
+        files = [
+            FileChange(filename="lib/services/user-service.ts", status="modified", additions=10, patch="+code"),
+            FileChange(filename="tests/lib/services/user-service.test.ts", status="added", additions=20, patch="+test"),
+        ]
+        assert check_test_coverage("lib/services/user-service.ts", "service", files) is True
+
+    def test_found_in_pr_files_route(self):
+        """Test found in PR files for a route — tier 1."""
+        files = [
+            FileChange(filename="app/api/auth/verify-otp/route.ts", status="added", additions=60, patch="+code"),
+            FileChange(filename="tests/api/verify-otp.test.ts", status="added", additions=20, patch="+test"),
+        ]
+        assert check_test_coverage("app/api/auth/verify-otp/route.ts", "route", files) is True
+
+    def test_found_in_repo_test_files_service(self):
+        """Test found in repo test files by name — tier 2."""
+        files = [
+            FileChange(filename="lib/services/user-service.ts", status="modified", additions=10, patch="+code"),
+        ]
+        repo_tests = ["tests/lib/services/user-service.test.ts", "tests/other.test.ts"]
+        assert check_test_coverage(
+            "lib/services/user-service.ts", "service", files, repo_test_files=repo_tests
+        ) is True
+
+    def test_found_in_repo_test_files_route(self):
+        """Test found in repo test files by route identifier — tier 2."""
+        files = [
+            FileChange(filename="app/api/supplier-account/export/route.ts", status="added", additions=30, patch="+code"),
+        ]
+        repo_tests = ["tests/api/export.route.test.ts"]
+        assert check_test_coverage(
+            "app/api/supplier-account/export/route.ts", "route", files, repo_test_files=repo_tests
+        ) is True
+
+    def test_found_via_content_verification(self):
+        """Test found via content-based verification — tier 3."""
+        files = [
+            FileChange(filename="app/api/supplier-account/export/route.ts", status="added", additions=30, patch="+code"),
+        ]
+        repo_tests = ["tests/api/supplier-account.export.route.test.ts"]
+
+        def mock_fetch(path):
+            return 'import { handler } from "../../app/api/supplier-account/export/route";'
+
+        assert check_test_coverage(
+            "app/api/supplier-account/export/route.ts", "route", files,
+            repo_test_files=repo_tests, fetch_content=mock_fetch,
+        ) is True
+
+    def test_not_found(self):
+        """No test coverage found."""
+        files = [
+            FileChange(filename="lib/services/new-service.ts", status="added", additions=100, patch="+code"),
+        ]
+        assert check_test_coverage("lib/services/new-service.ts", "service", files) is False
+
+    def test_fetch_failure_graceful(self):
+        """Content fetch failure at tier 3 doesn't crash — returns False."""
+        # Use a route: _is_test_for_route checks parent dir "export" in test path.
+        # The test file contains "supplier-account" but NOT "export", so tier 2
+        # won't match. But _find_candidate_test_files finds it via the
+        # "supplier-account" identifier, triggering tier 3 content fetch.
+        files = [
+            FileChange(filename="app/api/supplier-account/export/route.ts", status="added", additions=30, patch="+code"),
+        ]
+        repo_tests = ["tests/api/supplier-account-crud.test.ts"]
+
+        call_count = {"n": 0}
+        def mock_fetch(path):
+            call_count["n"] += 1
+            raise RuntimeError("Network error")
+
+        result = check_test_coverage(
+            "app/api/supplier-account/export/route.ts", "route", files,
+            repo_test_files=repo_tests, fetch_content=mock_fetch,
+        )
+        assert result is False
+        assert call_count["n"] >= 1  # fetch was attempted
+
+    def test_has_tests_true_from_repo_test_files_for_service(self):
+        """Service has_tests is True when test exists in repo but not in PR."""
+        files = [
+            FileChange(filename="lib/services/payment-service.ts", status="modified", additions=10, patch="+code"),
+        ]
+        repo_tests = ["tests/lib/services/payment-service.test.ts"]
+        services = detect_service_changes(files, repo_test_files=repo_tests)
+        actual = [s for s in services if s.path == "lib/services/payment-service.ts"]
+        assert len(actual) == 1
+        assert actual[0].has_tests is True
+
+    def test_has_tests_true_from_repo_test_files_for_route(self):
+        """Route has_tests is True when test exists in repo but not in PR."""
+        files = [
+            FileChange(filename="app/api/payments/route.ts", status="added", additions=40, patch="+code"),
+        ]
+        repo_tests = ["tests/api/payments.test.ts"]
+        routes = detect_api_routes(files, repo_test_files=repo_tests)
+        assert len(routes) == 1
+        assert routes[0].has_tests is True
+
+
+# ---------------------------------------------------------------------------
+# _verify_test_content
+# ---------------------------------------------------------------------------
+
+
+class TestVerifyTestContent:
+    """Tests for _verify_test_content()."""
+
+    def test_import_match(self):
+        content = 'import { calculatePayment } from "../../lib/services/payment-service";\n'
+        assert _verify_test_content(content, "lib/services/payment-service.ts", "service") is True
+
+    def test_endpoint_match(self):
+        content = 'const response = await fetch("/api/supplier-account/export");\n'
+        assert _verify_test_content(content, "app/api/supplier-account/export/route.ts", "route") is True
+
+    def test_dot_notation_match(self):
+        content = 'describe("supplier-account.export", () => {\n  it("exports data", () => {});\n});\n'
+        assert _verify_test_content(content, "app/api/supplier-account/export/route.ts", "route") is True
+
+    def test_service_basename_match(self):
+        content = 'describe("payment-service", () => {\n  it("calculates", () => {});\n});\n'
+        assert _verify_test_content(content, "lib/services/payment-service.ts", "service") is True
+
+    def test_route_identifier_match(self):
+        content = 'describe("verify-otp", () => {\n  it("sends otp", () => {});\n});\n'
+        assert _verify_test_content(content, "app/api/auth/verify-otp/route.ts", "route") is True
+
+    def test_no_match(self):
+        content = 'describe("unrelated", () => {\n  it("does something", () => {});\n});\n'
+        assert _verify_test_content(content, "lib/services/payment-service.ts", "service") is False
+
+    def test_case_insensitive(self):
+        content = 'import { handler } from "../../LIB/SERVICES/PAYMENT-SERVICE";\n'
+        assert _verify_test_content(content, "lib/services/payment-service.ts", "service") is True
+
+
+# ---------------------------------------------------------------------------
+# _verify_test_content_advanced
+# ---------------------------------------------------------------------------
+
+
+class TestVerifyTestContentAdvanced:
+    """Tests for _verify_test_content_advanced()."""
+
+    def test_cross_check_exports_found(self):
+        """When source exports are referenced in tests and LLM confirms, returns True."""
+        source = 'export function calculateTotal(price, qty) { return price * qty; }\n'
+        test = 'import { calculateTotal } from "../../lib/services/calc";\ndescribe("calc", () => {});\n'
+
+        with patch("langchain_anthropic.ChatAnthropic") as MockLLM:
+            mock_instance = MagicMock()
+            mock_instance.invoke.return_value = MagicMock(content='{"covers": true, "reason": "good"}')
+            MockLLM.return_value = mock_instance
+
+            result = _verify_test_content_advanced(
+                test, source, "lib/services/calc.ts", "service", "claude-haiku-4-5-20251001"
+            )
+            assert result is True
+
+    def test_cross_check_no_exports_referenced(self):
+        """When no source exports are referenced in tests, returns False."""
+        source = 'export function calculateTotal(price, qty) { return price * qty; }\n'
+        test = 'describe("unrelated", () => {});\n'
+
+        result = _verify_test_content_advanced(
+            test, source, "lib/services/calc.ts", "service", "claude-haiku-4-5-20251001"
+        )
+        assert result is False
+
+    def test_llm_says_not_covered(self):
+        """When LLM says covers: false, returns False."""
+        source = 'export function helper() { return 1; }\n'
+        test = 'import { helper } from "../../lib/services/svc";\ndescribe("x", () => {});\n'
+
+        with patch("langchain_anthropic.ChatAnthropic") as MockLLM:
+            mock_instance = MagicMock()
+            mock_instance.invoke.return_value = MagicMock(content='{"covers": false, "reason": "incomplete"}')
+            MockLLM.return_value = mock_instance
+
+            result = _verify_test_content_advanced(
+                test, source, "lib/services/svc.ts", "service", "claude-haiku-4-5-20251001"
+            )
+            assert result is False
+
+    def test_llm_failure_falls_back_to_deterministic(self):
+        """When LLM call fails, falls back to deterministic cross-check."""
+        source = 'export function helper() { return 1; }\n'
+        test = 'import { helper } from "../../lib/services/svc";\ndescribe("x", () => {});\n'
+
+        with patch("langchain_anthropic.ChatAnthropic") as MockLLM:
+            MockLLM.side_effect = Exception("langchain not available")
+
+            result = _verify_test_content_advanced(
+                test, source, "lib/services/svc.ts", "service", "claude-haiku-4-5-20251001"
+            )
+            # Falls back to deterministic: helper is referenced
+            assert result is True
+
+
+# ---------------------------------------------------------------------------
+# _find_candidate_test_files
+# ---------------------------------------------------------------------------
+
+
+class TestFindCandidateTestFiles:
+    """Tests for _find_candidate_test_files()."""
+
+    def test_finds_by_identifier(self):
+        repo_tests = [
+            "tests/api/supplier-account.export.route.test.ts",
+            "tests/lib/services/auth.test.ts",
+            "tests/api/payments.test.ts",
+        ]
+        candidates = _find_candidate_test_files(
+            "app/api/supplier-account/export/route.ts", "route", repo_tests
+        )
+        assert "tests/api/supplier-account.export.route.test.ts" in candidates
+
+    def test_excludes_unrelated(self):
+        repo_tests = [
+            "tests/lib/services/auth.test.ts",
+            "tests/api/payments.test.ts",
+        ]
+        candidates = _find_candidate_test_files(
+            "app/api/supplier-account/export/route.ts", "route", repo_tests
+        )
+        assert "tests/lib/services/auth.test.ts" not in candidates
+        assert "tests/api/payments.test.ts" not in candidates
+
+    def test_respects_cap(self):
+        repo_tests = [f"tests/payment-{i}.test.ts" for i in range(20)]
+        candidates = _find_candidate_test_files(
+            "lib/services/payment-service.ts", "service", repo_tests
+        )
+        assert len(candidates) <= 5
+
+    def test_service_basename_matching(self):
+        repo_tests = [
+            "tests/lib/services/payment-service.test.ts",
+            "tests/api/unrelated.test.ts",
+        ]
+        candidates = _find_candidate_test_files(
+            "lib/services/payment-service.ts", "service", repo_tests
+        )
+        assert "tests/lib/services/payment-service.test.ts" in candidates
+        assert len(candidates) == 1
+
+    def test_empty_repo_test_files(self):
+        candidates = _find_candidate_test_files(
+            "lib/services/payment-service.ts", "service", []
+        )
+        assert candidates == []

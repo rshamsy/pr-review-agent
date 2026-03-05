@@ -487,3 +487,52 @@ class TestGetContextPageUrls:
             "https://notion.so/a",
             "https://notion.so/b",
         ]
+
+
+# ===== TEST_VERIFICATION_MODE / TEST_VERIFICATION_MODEL =====
+
+
+class TestTestVerificationConfig:
+    """Tests for the TEST_VERIFICATION_MODE and TEST_VERIFICATION_MODEL config vars."""
+
+    def test_default_verification_mode(self):
+        with patch.dict("os.environ", {}, clear=True):
+            cfg = AgentConfig(_env_file=None)
+        assert cfg.test_verification_mode == "default"
+
+    def test_default_verification_model(self):
+        with patch.dict("os.environ", {}, clear=True):
+            cfg = AgentConfig(_env_file=None)
+        assert cfg.test_verification_model == "claude-haiku-4-5-20251001"
+
+    def test_verification_mode_from_env(self):
+        env = {"TEST_VERIFICATION_MODE": "advanced"}
+        with patch.dict("os.environ", env, clear=True):
+            cfg = AgentConfig(_env_file=None)
+        assert cfg.test_verification_mode == "advanced"
+
+    def test_verification_model_from_env(self):
+        env = {"TEST_VERIFICATION_MODEL": "claude-sonnet-4-20250514"}
+        with patch.dict("os.environ", env, clear=True):
+            cfg = AgentConfig(_env_file=None)
+        assert cfg.test_verification_model == "claude-sonnet-4-20250514"
+
+    def test_verification_mode_in_known_env_vars(self):
+        assert "TEST_VERIFICATION_MODE" in KNOWN_ENV_VARS
+
+    def test_verification_model_in_known_env_vars(self):
+        assert "TEST_VERIFICATION_MODEL" in KNOWN_ENV_VARS
+
+    def test_update_user_env_verification_mode(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text("")
+        with patch("pr_review_agent.config.USER_ENV_FILE", env_file):
+            update_user_env("TEST_VERIFICATION_MODE", "advanced")
+        assert "TEST_VERIFICATION_MODE=advanced" in env_file.read_text()
+
+    def test_update_user_env_verification_model(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text("")
+        with patch("pr_review_agent.config.USER_ENV_FILE", env_file):
+            update_user_env("TEST_VERIFICATION_MODEL", "claude-sonnet-4-20250514")
+        assert "TEST_VERIFICATION_MODEL=claude-sonnet-4-20250514" in env_file.read_text()

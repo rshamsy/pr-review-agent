@@ -13,6 +13,8 @@ KNOWN_ENV_VARS: frozenset[str] = frozenset({
     "NOTION_API_KEY",
     "NOTION_CONTEXT_PAGES",
     "PR_REVIEW_MODEL",
+    "TEST_VERIFICATION_MODE",
+    "TEST_VERIFICATION_MODEL",
 })
 
 USER_ENV_FILE: Path = Path.home() / ".config" / "pr-review-agent" / ".env"
@@ -76,6 +78,8 @@ class AgentConfig(BaseSettings):
     notion_api_key: str = ""
     notion_context_pages: str = ""
     pr_review_model: str = "claude-sonnet-4-20250514"
+    test_verification_mode: str = "default"
+    test_verification_model: str = "claude-haiku-4-5-20251001"
 
     def get_context_page_urls(self) -> list[str]:
         """Split and strip the comma-separated NOTION_CONTEXT_PAGES value."""

@@ -7,7 +7,9 @@ Path patterns are configurable to support any tech stack.
 
 from __future__ import annotations
 
+import json
 import re
+from typing import Callable
 
 from pr_review_agent.models.pr import (
     APIRouteInfo,
@@ -59,10 +61,28 @@ TEST_PATTERNS = [
 ]
 
 
-def analyze_pr(pr_data: PRData) -> PRAnalysis:
+def analyze_pr(
+    pr_data: PRData,
+    repo_test_files: list[str] | None = None,
+    fetch_content: Callable[[str], str] | None = None,
+    verification_mode: str = "default",
+    verification_model: str | None = None,
+) -> PRAnalysis:
     """Main PR analysis entry point."""
-    services = detect_service_changes(pr_data.files)
-    api_routes = detect_api_routes(pr_data.files)
+    services = detect_service_changes(
+        pr_data.files,
+        repo_test_files=repo_test_files,
+        fetch_content=fetch_content,
+        verification_mode=verification_mode,
+        verification_model=verification_model,
+    )
+    api_routes = detect_api_routes(
+        pr_data.files,
+        repo_test_files=repo_test_files,
+        fetch_content=fetch_content,
+        verification_mode=verification_mode,
+        verification_model=verification_model,
+    )
     ui_changes = detect_ui_changes(pr_data.files)
     test_files = detect_test_files(pr_data.files)
     missing_tests = find_missing_tests(services, api_routes, test_files)
@@ -83,7 +103,13 @@ def analyze_pr(pr_data: PRData) -> PRAnalysis:
     )
 
 
-def detect_service_changes(files: list[FileChange]) -> list[ServiceChangeInfo]:
+def detect_service_changes(
+    files: list[FileChange],
+    repo_test_files: list[str] | None = None,
+    fetch_content: Callable[[str], str] | None = None,
+    verification_mode: str = "default",
+    verification_model: str | None = None,
+) -> list[ServiceChangeInfo]:
     """Detect changes to service files using configurable patterns."""
     services: list[ServiceChangeInfo] = []
 
@@ -101,9 +127,15 @@ def detect_service_changes(files: list[FileChange]) -> list[ServiceChangeInfo]:
             kw in content.lower() for kw in FINANCIAL_KEYWORDS
         )
 
-        # Check if test exists in the PR files
-        has_tests = any(
-            _is_test_for_service(f.filename, basename) for f in files
+        # Check if test exists — PR files first, then repo-wide search
+        has_tests = check_test_coverage(
+            source_path=file.filename,
+            source_type="service",
+            pr_files=files,
+            repo_test_files=repo_test_files,
+            fetch_content=fetch_content,
+            verification_mode=verification_mode,
+            verification_model=verification_model,
         )
 
         services.append(ServiceChangeInfo(
@@ -146,7 +178,226 @@ def _is_test_for_route(test_path: str, route_path: str) -> bool:
     return route_identifier in test_path
 
 
-def detect_api_routes(files: list[FileChange]) -> list[APIRouteInfo]:
+# Segments that are too generic to be meaningful identifiers
+_SKIP_SEGMENTS = frozenset({
+    "app", "api", "lib", "src", "services", "route", "routes",
+    "pages", "page", "index", "components", "utils", "helpers",
+})
+
+_MAX_CANDIDATES = 5
+
+
+def check_test_coverage(
+    source_path: str,
+    source_type: str,
+    pr_files: list[FileChange],
+    repo_test_files: list[str] | None = None,
+    fetch_content: Callable[[str], str] | None = None,
+    verification_mode: str = "default",
+    verification_model: str | None = None,
+) -> bool:
+    """Check whether *source_path* has test coverage.
+
+    Three-tier matching (default mode uses tiers 1-3, advanced adds tier 4):
+
+    1. Check PR files with existing ``_is_test_for_service``/``_is_test_for_route``
+    2. Check repo test file paths with same matchers
+    3. Fetch candidate test content and verify references (deterministic)
+    4. **Advanced only**: cross-check exports and LLM confirmation
+    """
+    # Tier 1: check PR files
+    if source_type == "service":
+        basename = source_path.split("/")[-1].rsplit(".", 1)[0]
+        if any(_is_test_for_service(f.filename, basename) for f in pr_files):
+            return True
+    elif source_type == "route":
+        if any(_is_test_for_route(f.filename, source_path) for f in pr_files):
+            return True
+
+    # Tier 2: check repo test file paths
+    if repo_test_files:
+        if source_type == "service":
+            basename = source_path.split("/")[-1].rsplit(".", 1)[0]
+            if any(_is_test_for_service(tp, basename) for tp in repo_test_files):
+                return True
+        elif source_type == "route":
+            if any(_is_test_for_route(tp, source_path) for tp in repo_test_files):
+                return True
+
+    # Tier 3: content-based verification of candidate test files
+    if repo_test_files and fetch_content:
+        candidates = _find_candidate_test_files(source_path, source_type, repo_test_files)
+        for candidate in candidates:
+            try:
+                content = fetch_content(candidate)
+            except Exception:
+                continue
+            if _verify_test_content(content, source_path, source_type):
+                return True
+
+    # Tier 4: advanced mode — LLM verification
+    if verification_mode == "advanced" and repo_test_files and fetch_content and verification_model:
+        candidates = _find_candidate_test_files(source_path, source_type, repo_test_files)
+        try:
+            source_content = fetch_content(source_path)
+        except Exception:
+            return False
+        for candidate in candidates:
+            try:
+                test_content = fetch_content(candidate)
+            except Exception:
+                continue
+            if _verify_test_content_advanced(
+                test_content, source_content, source_path, source_type, verification_model,
+            ):
+                return True
+
+    return False
+
+
+def _find_candidate_test_files(
+    source_path: str,
+    source_type: str,
+    repo_test_files: list[str],
+) -> list[str]:
+    """Find test files whose paths contain meaningful identifiers from *source_path*.
+
+    Skips generic segments like ``app``, ``api``, ``route``, etc.
+    Returns at most ``_MAX_CANDIDATES`` results.
+    """
+    parts = source_path.replace("\\", "/").split("/")
+    # Strip file extension from the last segment
+    if parts:
+        parts[-1] = parts[-1].rsplit(".", 1)[0]
+
+    identifiers = [p for p in parts if p and p.lower() not in _SKIP_SEGMENTS]
+    if not identifiers:
+        return []
+
+    candidates: list[str] = []
+    for test_path in repo_test_files:
+        test_lower = test_path.lower()
+        if any(ident.lower() in test_lower for ident in identifiers):
+            candidates.append(test_path)
+            if len(candidates) >= _MAX_CANDIDATES:
+                break
+
+    return candidates
+
+
+def _verify_test_content(
+    test_content: str,
+    source_path: str,
+    source_type: str,
+) -> bool:
+    """Deterministic string matching on test file content (no LLM).
+
+    Checks import/require references, API endpoint paths, dot-notation
+    paths, and service basenames in describe/it blocks. All checks are
+    case-insensitive.
+    """
+    content_lower = test_content.lower()
+    path_parts = source_path.replace("\\", "/").split("/")
+
+    # Build the module path without extension for import matching
+    module_path = source_path.rsplit(".", 1)[0]
+
+    # Check 1: import/require referencing the source module path
+    if module_path.lower() in content_lower:
+        return True
+
+    # Check 2: API endpoint path (e.g., /api/supplier-account/export)
+    if source_type == "route" and "api" in path_parts:
+        api_idx = path_parts.index("api")
+        endpoint_parts = path_parts[api_idx:]
+        # Remove the filename if it's "route"
+        if endpoint_parts and endpoint_parts[-1].rsplit(".", 1)[0].lower() == "route":
+            endpoint_parts = endpoint_parts[:-1]
+        endpoint = "/" + "/".join(endpoint_parts)
+        if endpoint.lower() in content_lower:
+            return True
+
+    # Check 3: dot-notation path (e.g., supplier-account.export)
+    meaningful = [p for p in path_parts if p and p.lower() not in _SKIP_SEGMENTS]
+    if meaningful:
+        dot_notation = ".".join(meaningful).rsplit(".", 1)[0]  # strip file ext
+        if len(dot_notation) > 3 and dot_notation.lower() in content_lower:
+            return True
+
+    # Check 4: service basename or route identifier in describe/it blocks
+    if source_type == "service":
+        basename = path_parts[-1].rsplit(".", 1)[0]
+        if basename.lower() in content_lower:
+            return True
+    elif source_type == "route" and len(path_parts) >= 2:
+        route_identifier = path_parts[-2]
+        if route_identifier.lower() in content_lower:
+            return True
+
+    return False
+
+
+def _verify_test_content_advanced(
+    test_content: str,
+    source_content: str,
+    source_path: str,
+    source_type: str,
+    model: str,
+) -> bool:
+    """Advanced verification: cross-check exports and LLM confirmation.
+
+    First does a deterministic cross-check of source exports against test
+    content. Then uses an LLM to confirm the test adequately covers the
+    source.
+    """
+    # Deterministic: parse exported names from source
+    export_names: list[str] = []
+    for match in re.finditer(
+        r"export\s+(?:async\s+)?(?:function|class|const|let|var|def)\s+(\w+)",
+        source_content,
+    ):
+        export_names.append(match.group(1))
+
+    # Also look for HTTP method handler exports (Next.js style)
+    for method in ("GET", "POST", "PUT", "DELETE", "PATCH"):
+        if f"export async function {method}" in source_content:
+            if method not in export_names:
+                export_names.append(method)
+
+    # Cross-check: at least one export should appear in the test
+    test_lower = test_content.lower()
+    has_export_ref = any(name.lower() in test_lower for name in export_names)
+    if not has_export_ref and export_names:
+        return False
+
+    # LLM confirmation
+    try:
+        from langchain_anthropic import ChatAnthropic
+
+        llm = ChatAnthropic(model=model, max_tokens=256)
+        prompt = (
+            "Given this source file and this test file, does the test adequately "
+            "cover the source? Respond with JSON only: "
+            '{\"covers\": true/false, \"reason\": \"...\"}\n\n'
+            f"Source ({source_path}):\n```\n{source_content[:3000]}\n```\n\n"
+            f"Test:\n```\n{test_content[:3000]}\n```"
+        )
+        response = llm.invoke(prompt)
+        text = response.content if hasattr(response, "content") else str(response)
+        result = json.loads(text)
+        return bool(result.get("covers", False))
+    except Exception:
+        # If LLM call fails, fall back to the deterministic result
+        return has_export_ref
+
+
+def detect_api_routes(
+    files: list[FileChange],
+    repo_test_files: list[str] | None = None,
+    fetch_content: Callable[[str], str] | None = None,
+    verification_mode: str = "default",
+    verification_model: str | None = None,
+) -> list[APIRouteInfo]:
     """Detect API route changes."""
     routes: list[APIRouteInfo] = []
 
@@ -172,9 +423,15 @@ def detect_api_routes(files: list[FileChange]) -> list[APIRouteInfo]:
             or ("if (" in content and "throw" in content)
         )
 
-        # Check if a test exists in the PR files for this route
-        has_tests = any(
-            _is_test_for_route(f.filename, file.filename) for f in files
+        # Check if a test exists — PR files first, then repo-wide search
+        has_tests = check_test_coverage(
+            source_path=file.filename,
+            source_type="route",
+            pr_files=files,
+            repo_test_files=repo_test_files,
+            fetch_content=fetch_content,
+            verification_mode=verification_mode,
+            verification_model=verification_model,
         )
 
         routes.append(APIRouteInfo(

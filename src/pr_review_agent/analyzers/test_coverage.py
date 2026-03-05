@@ -44,6 +44,8 @@ def analyze_coverage(
             ))
 
     for route in api_routes:
+        if route.has_tests:
+            continue
         if not route.has_business_logic:
             continue
         if route.lines_of_logic < 30:

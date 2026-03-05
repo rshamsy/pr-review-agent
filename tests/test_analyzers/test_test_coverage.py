@@ -170,6 +170,22 @@ class TestAnalyzeCoverage:
         missing, _ = analyze_coverage([], routes)
         assert len(missing) == 0
 
+    def test_does_not_flag_api_route_with_tests(self):
+        """API route with has_tests=True should not be flagged."""
+        routes = [
+            APIRouteInfo(
+                path="app/api/orders/route.ts",
+                endpoint="/orders",
+                methods=["POST"],
+                is_new=True,
+                lines_of_logic=60,
+                has_business_logic=True,
+                has_tests=True,
+            ),
+        ]
+        missing, _ = analyze_coverage([], routes)
+        assert len(missing) == 0
+
     def test_combined_services_and_routes(self):
         services = [
             ServiceChangeInfo(

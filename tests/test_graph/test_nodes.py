@@ -110,6 +110,36 @@ class TestFetchPrData:
 
         assert result["ci_status"] == {}
 
+    @patch("pr_review_agent.graph.nodes.fetch_repo_test_files")
+    @patch("pr_review_agent.graph.nodes.fetch_ci_checks")
+    @patch("pr_review_agent.graph.nodes.fetch_diff")
+    @patch("pr_review_agent.graph.nodes.fetch_pr")
+    def test_populates_repo_test_files(self, mock_fetch_pr, mock_fetch_diff, mock_fetch_ci, mock_fetch_tests):
+        """fetch_pr_data populates repo_test_files in the result."""
+        mock_fetch_pr.return_value = PRData(number=1, title="T", author="a")
+        mock_fetch_diff.return_value = ""
+        mock_fetch_ci.return_value = CIStatus(all_passed=True, checks=[])
+        mock_fetch_tests.return_value = ["tests/api/payment.test.ts", "tests/lib/auth.test.ts"]
+
+        result = fetch_pr_data({"pr_number": 1})
+
+        assert result["repo_test_files"] == ["tests/api/payment.test.ts", "tests/lib/auth.test.ts"]
+
+    @patch("pr_review_agent.graph.nodes.fetch_repo_test_files")
+    @patch("pr_review_agent.graph.nodes.fetch_ci_checks")
+    @patch("pr_review_agent.graph.nodes.fetch_diff")
+    @patch("pr_review_agent.graph.nodes.fetch_pr")
+    def test_repo_test_files_failure_handled_gracefully(self, mock_fetch_pr, mock_fetch_diff, mock_fetch_ci, mock_fetch_tests):
+        """When repo test file retrieval fails, empty list is returned."""
+        mock_fetch_pr.return_value = PRData(number=1, title="T", author="a")
+        mock_fetch_diff.return_value = ""
+        mock_fetch_ci.return_value = CIStatus(all_passed=True, checks=[])
+        mock_fetch_tests.side_effect = RuntimeError("gh command failed")
+
+        result = fetch_pr_data({"pr_number": 1})
+
+        assert result["repo_test_files"] == []
+
 
 # ===========================================================================
 # Tests for summarize_pr_node
@@ -170,10 +200,15 @@ class TestSummarizePrNode:
 class TestAnalyzePrNode:
     """Tests for the analyze_pr_node."""
 
+    @patch("pr_review_agent.config.get_config")
     @patch("pr_review_agent.graph.nodes.detect_migrations")
     @patch("pr_review_agent.graph.nodes.analyze_pr")
-    def test_returns_analysis(self, mock_analyze, mock_detect_migrations):
+    def test_returns_analysis(self, mock_analyze, mock_detect_migrations, mock_config):
         """analyze_pr_node runs analysis and returns the result."""
+        mock_config.return_value = MagicMock(
+            test_verification_mode="default",
+            test_verification_model="claude-haiku-4-5-20251001",
+        )
         pr_data = PRData(
             number=1,
             title="Test",
@@ -192,12 +227,20 @@ class TestAnalyzePrNode:
         result = analyze_pr_node(state)
 
         assert result["pr_analysis"] is analysis
-        mock_analyze.assert_called_once_with(pr_data)
+        mock_analyze.assert_called_once()
+        call_kwargs = mock_analyze.call_args
+        assert call_kwargs[0][0] is pr_data
+        assert call_kwargs[1]["verification_mode"] == "default"
 
+    @patch("pr_review_agent.config.get_config")
     @patch("pr_review_agent.graph.nodes.detect_migrations")
     @patch("pr_review_agent.graph.nodes.analyze_pr")
-    def test_migrations_added_to_analysis(self, mock_analyze, mock_detect_migrations):
+    def test_migrations_added_to_analysis(self, mock_analyze, mock_detect_migrations, mock_config):
         """Detected migrations are added to the analysis object."""
+        mock_config.return_value = MagicMock(
+            test_verification_mode="default",
+            test_verification_model="claude-haiku-4-5-20251001",
+        )
         pr_data = PRData(number=1, title="T", author="a", files=[])
         analysis = PRAnalysis(classification="minor")
         mock_analyze.return_value = analysis
@@ -210,6 +253,48 @@ class TestAnalyzePrNode:
         result = analyze_pr_node({"pr_data": pr_data})
 
         assert result["pr_analysis"].migrations == mock_migrations
+
+    @patch("pr_review_agent.config.get_config")
+    @patch("pr_review_agent.graph.nodes.detect_migrations")
+    @patch("pr_review_agent.graph.nodes.analyze_pr")
+    def test_passes_config_options(self, mock_analyze, mock_detect_migrations, mock_config):
+        """analyze_pr_node passes verification config to analyze_pr."""
+        mock_config.return_value = MagicMock(
+            test_verification_mode="advanced",
+            test_verification_model="claude-sonnet-4-20250514",
+        )
+        pr_data = PRData(number=1, title="T", author="a", files=[])
+        analysis = PRAnalysis(classification="minor")
+        mock_analyze.return_value = analysis
+        mock_detect_migrations.return_value = []
+
+        state = {"pr_data": pr_data, "repo_test_files": ["tests/foo.test.ts"]}
+        analyze_pr_node(state)
+
+        call_kwargs = mock_analyze.call_args[1]
+        assert call_kwargs["verification_mode"] == "advanced"
+        assert call_kwargs["verification_model"] == "claude-sonnet-4-20250514"
+        assert call_kwargs["repo_test_files"] == ["tests/foo.test.ts"]
+
+    @patch("pr_review_agent.config.get_config")
+    @patch("pr_review_agent.graph.nodes.detect_migrations")
+    @patch("pr_review_agent.graph.nodes.analyze_pr")
+    def test_repo_test_files_none_when_empty(self, mock_analyze, mock_detect_migrations, mock_config):
+        """When repo_test_files is empty list, passes None to analyze_pr."""
+        mock_config.return_value = MagicMock(
+            test_verification_mode="default",
+            test_verification_model="claude-haiku-4-5-20251001",
+        )
+        pr_data = PRData(number=1, title="T", author="a", files=[])
+        analysis = PRAnalysis(classification="minor")
+        mock_analyze.return_value = analysis
+        mock_detect_migrations.return_value = []
+
+        state = {"pr_data": pr_data, "repo_test_files": []}
+        analyze_pr_node(state)
+
+        call_kwargs = mock_analyze.call_args[1]
+        assert call_kwargs["repo_test_files"] is None
 
 
 # ===========================================================================

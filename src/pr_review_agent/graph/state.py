@@ -15,6 +15,7 @@ class AgentState(TypedDict, total=False):
     pr_data: PRData
     ci_status: dict
     diff_text: str
+    repo_test_files: list[str]
     pr_summary: str
     notion_results: list[NotionSearchResult]
     relevance_scores: list[RelevanceScore]

@@ -13,7 +13,9 @@ from pr_review_agent.github.pr_client import (
     _run_gh,
     fetch_ci_checks,
     fetch_diff,
+    fetch_file_content,
     fetch_pr,
+    fetch_repo_test_files,
 )
 from pr_review_agent.models.pr import CICheck, CIStatus, PRData
 
@@ -412,3 +414,120 @@ class TestFetchCIChecks:
         mock_gh.return_value = json.dumps(data)
         ci = fetch_ci_checks(39)
         assert ci.checks[0].conclusion == "SUCCESS"
+
+
+# ===========================================================================
+# fetch_repo_test_files
+# ===========================================================================
+
+
+class TestFetchRepoTestFiles:
+    """Tests for fetch_repo_test_files()."""
+
+    @patch("pr_review_agent.github.pr_client._run_gh")
+    def test_returns_test_files_only(self, mock_gh: MagicMock) -> None:
+        mock_gh.return_value = (
+            "tests/api/payment.test.ts\n"
+            "tests/lib/services/auth.test.ts\n"
+            "src/services/auth-service.ts\n"
+            "lib/utils/helpers.ts\n"
+            "__tests__/component.tsx\n"
+        )
+        result = fetch_repo_test_files()
+        assert "tests/api/payment.test.ts" in result
+        assert "tests/lib/services/auth.test.ts" in result
+        assert "__tests__/component.tsx" in result
+        assert "src/services/auth-service.ts" not in result
+        assert "lib/utils/helpers.ts" not in result
+
+    @patch("pr_review_agent.github.pr_client._run_gh")
+    def test_custom_prefixes(self, mock_gh: MagicMock) -> None:
+        mock_gh.return_value = (
+            "spec/models/user_spec.rb\n"
+            "tests/api/payment.test.ts\n"
+            "lib/services/auth.ts\n"
+        )
+        result = fetch_repo_test_files(directory_prefixes=("spec/",))
+        assert result == ["spec/models/user_spec.rb"]
+
+    @patch("pr_review_agent.github.pr_client._run_gh")
+    def test_empty_tree(self, mock_gh: MagicMock) -> None:
+        mock_gh.return_value = ""
+        result = fetch_repo_test_files()
+        assert result == []
+
+    @patch("pr_review_agent.github.pr_client._run_gh")
+    def test_strips_whitespace(self, mock_gh: MagicMock) -> None:
+        mock_gh.return_value = "  tests/foo.test.ts  \n  tests/bar.test.ts  \n"
+        result = fetch_repo_test_files()
+        assert result == ["tests/foo.test.ts", "tests/bar.test.ts"]
+
+    @patch("pr_review_agent.github.pr_client._run_gh")
+    def test_raises_on_gh_failure(self, mock_gh: MagicMock) -> None:
+        mock_gh.side_effect = RuntimeError("gh command failed")
+        with pytest.raises(RuntimeError):
+            fetch_repo_test_files()
+
+    @patch("pr_review_agent.github.pr_client._run_gh")
+    def test_calls_gh_with_correct_args(self, mock_gh: MagicMock) -> None:
+        mock_gh.return_value = ""
+        fetch_repo_test_files()
+        mock_gh.assert_called_once_with(
+            [
+                "api", "repos/{owner}/{repo}/git/trees/HEAD",
+                "-q", '.tree[] | select(.type=="blob") | .path',
+                "--paginate",
+            ],
+            timeout=30,
+        )
+
+
+# ===========================================================================
+# fetch_file_content
+# ===========================================================================
+
+
+class TestFetchFileContent:
+    """Tests for fetch_file_content()."""
+
+    @patch("pr_review_agent.github.pr_client._run_gh")
+    def test_decodes_base64_content(self, mock_gh: MagicMock) -> None:
+        import base64
+        content = "export function hello() {}"
+        encoded = base64.b64encode(content.encode()).decode()
+        mock_gh.return_value = json.dumps({"content": encoded})
+        result = fetch_file_content("src/hello.ts")
+        assert result == content
+
+    @patch("pr_review_agent.github.pr_client._run_gh")
+    def test_handles_multiline_base64(self, mock_gh: MagicMock) -> None:
+        import base64
+        content = "line1\nline2\nline3\n"
+        encoded = base64.b64encode(content.encode()).decode()
+        # GitHub API returns base64 with newlines
+        chunked = "\n".join(encoded[i:i+76] for i in range(0, len(encoded), 76))
+        mock_gh.return_value = json.dumps({"content": chunked})
+        result = fetch_file_content("src/multi.ts")
+        assert result == content
+
+    @patch("pr_review_agent.github.pr_client._run_gh")
+    def test_raises_on_gh_failure(self, mock_gh: MagicMock) -> None:
+        mock_gh.side_effect = RuntimeError("gh command failed: not found")
+        with pytest.raises(RuntimeError):
+            fetch_file_content("src/missing.ts")
+
+    @patch("pr_review_agent.github.pr_client._run_gh")
+    def test_empty_content(self, mock_gh: MagicMock) -> None:
+        mock_gh.return_value = json.dumps({"content": ""})
+        result = fetch_file_content("src/empty.ts")
+        assert result == ""
+
+    @patch("pr_review_agent.github.pr_client._run_gh")
+    def test_calls_gh_with_correct_path(self, mock_gh: MagicMock) -> None:
+        import base64
+        mock_gh.return_value = json.dumps({"content": base64.b64encode(b"x").decode()})
+        fetch_file_content("lib/services/payment.ts")
+        mock_gh.assert_called_once_with(
+            ["api", "repos/{owner}/{repo}/contents/lib/services/payment.ts"],
+            timeout=30,
+        )
