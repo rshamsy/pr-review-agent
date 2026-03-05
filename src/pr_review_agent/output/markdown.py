@@ -11,7 +11,7 @@ def format_review_markdown(state: dict[str, Any]) -> str:
     recommendation = state.get("recommendation")
     analysis = state.get("pr_analysis")
     pr_data = state.get("pr_data")
-    notion_context = state.get("notion_context")
+    notion_contexts = state.get("notion_contexts", [])
 
     if not brief or not recommendation:
         return "# PR Review\n\nNo review results available."
@@ -33,15 +33,27 @@ def format_review_markdown(state: dict[str, Any]) -> str:
     lines.append(brief.summary)
     lines.append("")
 
-    # Notion context
-    if notion_context:
-        lines.append("## Feature Intent (from Notion)")
-        lines.append(f"**{notion_context.title}**")
-        if notion_context.description:
-            lines.append(f"\n{notion_context.description}")
-        if notion_context.page_url:
-            lines.append(f"\n[View in Notion]({notion_context.page_url})")
+    # CI/CD Status
+    ci_status = state.get("ci_status", {})
+    if ci_status.get("checks"):
+        lines.append("## CI/CD Status")
+        for check in ci_status["checks"]:
+            icon = {"success": "&#x2705;", "failure": "&#x274C;", "pending": "&#x23F3;"}.get(
+                check.get("status", ""), ""
+            )
+            lines.append(f"- {icon} {check.get('name', 'unknown')}")
         lines.append("")
+
+    # Notion context
+    if notion_contexts:
+        lines.append("## Feature Intent (from Notion)")
+        for notion_context in notion_contexts:
+            lines.append(f"**{notion_context.title}**")
+            if notion_context.description:
+                lines.append(f"\n{notion_context.description}")
+            if notion_context.page_url:
+                lines.append(f"\n[View in Notion]({notion_context.page_url})")
+            lines.append("")
 
     # What was requested
     if brief.what_was_requested:
@@ -86,8 +98,22 @@ def format_review_markdown(state: dict[str, Any]) -> str:
             lines.append(f"- **API Routes:** {len(analysis.api_routes)} changed")
         if analysis.migrations:
             lines.append(f"- **Migrations:** {len(analysis.migrations)}")
+            for m in analysis.migrations:
+                lines.append(f"  - **{m.name}** — risk: {m.risk_level}, rollback: {m.rollback_complexity}")
+                ops = ", ".join(f"{op.type} on `{op.table}`" for op in m.operations)
+                lines.append(f"    - Operations: {ops}")
+                if m.warnings:
+                    lines.append(f"    - Warnings: {'; '.join(m.warnings)}")
         if analysis.risks:
             lines.append(f"- **Risks:** {len(analysis.risks)} identified")
+        lines.append("")
+
+    # Missing tests
+    if analysis and analysis.missing_tests:
+        lines.append("## Missing Tests")
+        for t in analysis.missing_tests:
+            lines.append(f"- **{t.severity.upper()}**: `{t.service_file}`")
+            lines.append(f"  - Suggested: `{t.suggested_test_file}`")
         lines.append("")
 
     # Positive findings
@@ -126,6 +152,15 @@ def format_review_markdown(state: dict[str, Any]) -> str:
         for s in recommendation.suggestions:
             lines.append(f"- {s}")
         lines.append("")
+
+    # Browser testing checklist
+    checklist = state.get("testing_checklist", [])
+    if checklist:
+        from pr_review_agent.analyzers.checklist_generator import format_checklist
+
+        lines.append("## Browser Testing Checklist")
+        lines.append("")
+        lines.append(format_checklist(checklist))
 
     # Footer
     lines.append("---")

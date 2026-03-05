@@ -6,6 +6,7 @@ import asyncio
 
 from rich.console import Console
 
+from pr_review_agent.analyzers.checklist_generator import generate_testing_checklist
 from pr_review_agent.analyzers.migration_analyzer import detect_migrations
 from pr_review_agent.analyzers.pr_analyzer import analyze_pr
 from pr_review_agent.github.comment import post_pr_comment
@@ -16,7 +17,7 @@ from pr_review_agent.models.review import ReviewRecommendation
 from pr_review_agent.notion.client import NotionMCPClient
 from pr_review_agent.notion.context_loop import confirm_context, display_exit_instructions
 from pr_review_agent.notion.relevance import score_relevance
-from pr_review_agent.notion.search import contextual_search, fetch_page_by_url
+from pr_review_agent.notion.search import contextual_search, fetch_page_by_url, fetch_supplementary_context
 from pr_review_agent.output.markdown import format_review_markdown
 from pr_review_agent.output.terminal import display_results
 
@@ -77,22 +78,31 @@ def search_notion_node(state: AgentState) -> dict:
 
     from pr_review_agent.config import get_config
     config = get_config()
+    context_page_urls = config.get_context_page_urls()
 
     async def _search():
         client = NotionMCPClient(notion_api_key=config.notion_api_key)
         async with client.connect():
-            return await contextual_search(client, state["pr_summary"])
+            results = await contextual_search(client, state["pr_summary"])
+            supplementary: list = []
+            if context_page_urls:
+                supplementary = await fetch_supplementary_context(
+                    client, context_page_urls, state["pr_summary"],
+                )
+            return results, supplementary
 
     try:
-        results = asyncio.run(_search())
+        results, supplementary = asyncio.run(_search())
     except BaseException as exc:
         msg = _extract_mcp_error(exc)
         console.print(f"[red]Notion MCP error: {msg}[/red]")
-        return {"notion_results": [], "error": f"Notion connection failed: {msg}"}
+        return {"notion_results": [], "supplementary_contexts": [], "error": f"Notion connection failed: {msg}"}
 
     console.print(f"  Found {len(results)} potential match(es)")
+    if supplementary:
+        console.print(f"  Fetched {len(supplementary)} supplementary page(s)")
 
-    return {"notion_results": results}
+    return {"notion_results": results, "supplementary_contexts": supplementary}
 
 
 def score_relevance_node(state: AgentState) -> dict:
@@ -120,11 +130,15 @@ def score_relevance_node(state: AgentState) -> dict:
 def confirm_context_node(state: AgentState) -> dict:
     """Interactive: ask user to confirm the Notion context."""
     scores = state.get("relevance_scores", [])
-    choice, context, url = confirm_context(scores)
+    choice, contexts, url = confirm_context(scores)
+
+    # Merge user-selected contexts with supplementary contexts
+    supplementary = state.get("supplementary_contexts", [])
+    all_contexts = contexts + supplementary
 
     return {
         "user_confirmation": choice,
-        "notion_context": context,
+        "notion_contexts": all_contexts,
         "user_provided_url": url,
     }
 
@@ -191,16 +205,28 @@ def analyze_pr_node(state: AgentState) -> dict:
     return {"pr_analysis": analysis}
 
 
+def generate_checklist_node(state: AgentState) -> dict:
+    """Generate the browser testing checklist."""
+    console.print("[bold]Generating browser testing checklist...[/bold]")
+
+    checklist = generate_testing_checklist(state["pr_number"], state["pr_analysis"])
+
+    console.print(f"  Generated {len(checklist)} checklist items")
+
+    return {"testing_checklist": checklist}
+
+
 def generate_llm_brief_node(state: AgentState) -> dict:
     """Generate the review brief using Claude."""
     console.print("[bold]Generating review brief with Claude...[/bold]")
 
     model = state.get("model", "claude-sonnet-4-20250514")
     brief = generate_brief(
-        notion_context=state["notion_context"],
+        notion_contexts=state["notion_contexts"],
         pr_data=state["pr_data"],
         analysis=state["pr_analysis"],
         diff_text=state["diff_text"],
+        ci_status=state.get("ci_status"),
         model=model,
     )
 

@@ -68,6 +68,7 @@ class TestAgentConfig:
             cfg = AgentConfig(_env_file=None)
         assert cfg.anthropic_api_key == ""
         assert cfg.notion_api_key == ""
+        assert cfg.notion_context_pages == ""
         assert cfg.pr_review_model == "claude-sonnet-4-20250514"
 
     def test_env_vars_loaded(self):
@@ -427,3 +428,62 @@ class TestUpdateUserEnv:
             result = update_user_env("PR_REVIEW_MODEL", "claude-opus-4-20250514")
 
         assert result == env_file
+
+    def test_notion_context_pages_is_known_env_var(self):
+        """NOTION_CONTEXT_PAGES is in the KNOWN_ENV_VARS set."""
+        assert "NOTION_CONTEXT_PAGES" in KNOWN_ENV_VARS
+
+    def test_set_notion_context_pages(self, tmp_path):
+        """NOTION_CONTEXT_PAGES can be set via update_user_env."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("")
+        with patch("pr_review_agent.config.USER_ENV_FILE", env_file):
+            update_user_env("NOTION_CONTEXT_PAGES", "https://notion.so/page1,https://notion.so/page2")
+
+        content = env_file.read_text()
+        assert "NOTION_CONTEXT_PAGES=https://notion.so/page1,https://notion.so/page2" in content
+
+
+# ===== get_context_page_urls =====
+
+
+class TestGetContextPageUrls:
+    """Tests for AgentConfig.get_context_page_urls()."""
+
+    def test_empty_returns_empty_list(self):
+        with patch.dict("os.environ", {}, clear=True):
+            cfg = AgentConfig(_env_file=None)
+        assert cfg.get_context_page_urls() == []
+
+    def test_single_url(self):
+        env = {"NOTION_CONTEXT_PAGES": "https://notion.so/page1"}
+        with patch.dict("os.environ", env, clear=True):
+            cfg = AgentConfig(_env_file=None)
+        assert cfg.get_context_page_urls() == ["https://notion.so/page1"]
+
+    def test_multiple_urls(self):
+        env = {"NOTION_CONTEXT_PAGES": "https://notion.so/page1,https://notion.so/page2"}
+        with patch.dict("os.environ", env, clear=True):
+            cfg = AgentConfig(_env_file=None)
+        assert cfg.get_context_page_urls() == [
+            "https://notion.so/page1",
+            "https://notion.so/page2",
+        ]
+
+    def test_strips_whitespace(self):
+        env = {"NOTION_CONTEXT_PAGES": "  https://notion.so/a , https://notion.so/b  "}
+        with patch.dict("os.environ", env, clear=True):
+            cfg = AgentConfig(_env_file=None)
+        assert cfg.get_context_page_urls() == [
+            "https://notion.so/a",
+            "https://notion.so/b",
+        ]
+
+    def test_skips_empty_entries(self):
+        env = {"NOTION_CONTEXT_PAGES": "https://notion.so/a,,, ,https://notion.so/b"}
+        with patch.dict("os.environ", env, clear=True):
+            cfg = AgentConfig(_env_file=None)
+        assert cfg.get_context_page_urls() == [
+            "https://notion.so/a",
+            "https://notion.so/b",
+        ]

@@ -19,6 +19,7 @@ from pr_review_agent.graph.nodes import (
     fetch_pr_data,
     fetch_specific_page_node,
     format_output_node,
+    generate_checklist_node,
     generate_llm_brief_node,
     score_relevance_node,
     search_notion_node,
@@ -39,7 +40,7 @@ from pr_review_agent.models.pr import (
     PRData,
     ServiceChangeInfo,
 )
-from pr_review_agent.models.review import MissingTest, ReviewRecommendation, Risk
+from pr_review_agent.models.review import MissingTest, ReviewRecommendation, Risk, TestingChecklistItem
 
 
 # ===========================================================================
@@ -545,34 +546,58 @@ class TestConfirmContextNode:
     """Tests for the confirm_context_node."""
 
     @patch("pr_review_agent.graph.nodes.confirm_context")
-    def test_returns_user_choice(self, mock_confirm):
-        """confirm_context_node wraps confirm_context and returns choice/context/url."""
+    def test_returns_user_choice_with_contexts(self, mock_confirm):
+        """confirm_context_node wraps confirm_context and merges with supplementary."""
         context = NotionContext(
             page_id="p1", title="T", description="D", raw_content="C",
         )
-        mock_confirm.return_value = ("confirmed", context, None)
+        mock_confirm.return_value = ("confirmed", [context], None)
 
         state = {
             "relevance_scores": [
                 RelevanceScore(page_id="p1", title="T", score=8.0),
             ],
+            "supplementary_contexts": [],
         }
         result = confirm_context_node(state)
 
         assert result["user_confirmation"] == "confirmed"
-        assert result["notion_context"] is context
+        assert len(result["notion_contexts"]) == 1
+        assert result["notion_contexts"][0] is context
         assert result["user_provided_url"] is None
 
     @patch("pr_review_agent.graph.nodes.confirm_context")
     def test_exit_path(self, mock_confirm):
-        """When user exits, confirmation is 'exit' and context is None."""
-        mock_confirm.return_value = ("exit", None, None)
+        """When user exits, confirmation is 'exit' and contexts is empty."""
+        mock_confirm.return_value = ("exit", [], None)
 
-        state = {"relevance_scores": []}
+        state = {"relevance_scores": [], "supplementary_contexts": []}
         result = confirm_context_node(state)
 
         assert result["user_confirmation"] == "exit"
-        assert result["notion_context"] is None
+        assert result["notion_contexts"] == []
+
+    @patch("pr_review_agent.graph.nodes.confirm_context")
+    def test_merges_supplementary_contexts(self, mock_confirm):
+        """User-selected contexts are merged with supplementary contexts."""
+        user_ctx = NotionContext(
+            page_id="p1", title="User Page", description="D", raw_content="C",
+        )
+        supp_ctx = NotionContext(
+            page_id="p2", title="Standup Notes", description="Supplementary", raw_content="Notes",
+        )
+        mock_confirm.return_value = ("confirmed", [user_ctx], None)
+
+        state = {
+            "relevance_scores": [],
+            "supplementary_contexts": [supp_ctx],
+        }
+        result = confirm_context_node(state)
+
+        assert result["user_confirmation"] == "confirmed"
+        assert len(result["notion_contexts"]) == 2
+        assert result["notion_contexts"][0] is user_ctx
+        assert result["notion_contexts"][1] is supp_ctx
 
 
 # ===========================================================================
@@ -609,10 +634,11 @@ class TestGenerateLlmBriefNode:
         )
         mock_generate.return_value = brief
 
+        notion_ctx = NotionContext(
+            page_id="p1", title="Feature", raw_content="content",
+        )
         state = {
-            "notion_context": NotionContext(
-                page_id="p1", title="Feature", raw_content="content",
-            ),
+            "notion_contexts": [notion_ctx],
             "pr_data": PRData(number=1, title="T", author="a"),
             "pr_analysis": PRAnalysis(classification="minor"),
             "diff_text": "diff content",
@@ -622,10 +648,11 @@ class TestGenerateLlmBriefNode:
 
         assert result["review_brief"] is brief
         mock_generate.assert_called_once_with(
-            notion_context=state["notion_context"],
+            notion_contexts=[notion_ctx],
             pr_data=state["pr_data"],
             analysis=state["pr_analysis"],
             diff_text="diff content",
+            ci_status=None,
             model="claude-sonnet-4-20250514",
         )
 
@@ -674,7 +701,7 @@ class TestSearchNotionNodeErrorHandling:
     @patch("pr_review_agent.graph.nodes.asyncio.run")
     def test_exception_group_returns_empty_results(self, mock_run, mock_config):
         """When asyncio.run raises ExceptionGroup, returns empty results with error."""
-        mock_config.return_value = MagicMock(notion_api_key="test-key")
+        mock_config.return_value = MagicMock(notion_api_key="test-key", get_context_page_urls=MagicMock(return_value=[]))
         inner = RuntimeError("server process exited")
         mock_run.side_effect = ExceptionGroup("TaskGroup", [inner])
 
@@ -682,6 +709,7 @@ class TestSearchNotionNodeErrorHandling:
         result = search_notion_node(state)
 
         assert result["notion_results"] == []
+        assert result["supplementary_contexts"] == []
         assert "Notion connection failed" in result["error"]
         assert "server process exited" in result["error"]
 
@@ -689,13 +717,14 @@ class TestSearchNotionNodeErrorHandling:
     @patch("pr_review_agent.graph.nodes.asyncio.run")
     def test_runtime_error_returns_empty_results(self, mock_run, mock_config):
         """When asyncio.run raises RuntimeError, returns empty results with error."""
-        mock_config.return_value = MagicMock(notion_api_key="test-key")
+        mock_config.return_value = MagicMock(notion_api_key="test-key", get_context_page_urls=MagicMock(return_value=[]))
         mock_run.side_effect = RuntimeError("NOTION_API_KEY is not set")
 
         state = {"pr_summary": "Test PR summary"}
         result = search_notion_node(state)
 
         assert result["notion_results"] == []
+        assert result["supplementary_contexts"] == []
         assert "NOTION_API_KEY is not set" in result["error"]
 
     @patch("pr_review_agent.graph.nodes.contextual_search")
@@ -704,14 +733,36 @@ class TestSearchNotionNodeErrorHandling:
     @patch("pr_review_agent.graph.nodes.asyncio.run")
     def test_success_returns_results(self, mock_run, mock_config, mock_client_cls, mock_search):
         """On success, returns notion_results with no error."""
-        mock_config.return_value = MagicMock(notion_api_key="test-key")
-        mock_run.return_value = [MagicMock()]
+        mock_config.return_value = MagicMock(notion_api_key="test-key", get_context_page_urls=MagicMock(return_value=[]))
+        mock_run.return_value = ([MagicMock()], [])
 
         state = {"pr_summary": "Test PR summary"}
         result = search_notion_node(state)
 
         assert len(result["notion_results"]) == 1
+        assert result["supplementary_contexts"] == []
         assert "error" not in result
+
+    @patch("pr_review_agent.graph.nodes.contextual_search")
+    @patch("pr_review_agent.graph.nodes.NotionMCPClient")
+    @patch("pr_review_agent.config.get_config")
+    @patch("pr_review_agent.graph.nodes.asyncio.run")
+    def test_supplementary_contexts_returned(self, mock_run, mock_config, mock_client_cls, mock_search):
+        """When context page URLs are configured, supplementary contexts are fetched."""
+        supp_ctx = NotionContext(
+            page_id="supp-1", title="Standup", description="Supplementary", raw_content="Notes",
+        )
+        mock_config.return_value = MagicMock(
+            notion_api_key="test-key",
+            get_context_page_urls=MagicMock(return_value=["https://notion.so/standup"]),
+        )
+        mock_run.return_value = ([MagicMock()], [supp_ctx])
+
+        state = {"pr_summary": "Test PR summary"}
+        result = search_notion_node(state)
+
+        assert len(result["supplementary_contexts"]) == 1
+        assert result["supplementary_contexts"][0] is supp_ctx
 
 
 # ===========================================================================
@@ -754,3 +805,83 @@ class TestFetchSpecificPageNodeErrorHandling:
 
         assert result["relevance_scores"] == []
         assert "NOTION_API_KEY is not set" in result["error"]
+
+
+# ===========================================================================
+# Tests for generate_checklist_node
+# ===========================================================================
+
+class TestGenerateChecklistNode:
+    """Tests for generate_checklist_node."""
+
+    @patch("pr_review_agent.graph.nodes.generate_testing_checklist")
+    def test_returns_checklist(self, mock_gen):
+        """generate_checklist_node calls generate_testing_checklist and returns result."""
+        items = [
+            TestingChecklistItem(
+                category="pre-flight",
+                description="Verify deployment",
+                priority="must",
+            ),
+        ]
+        mock_gen.return_value = items
+
+        state = {
+            "pr_number": 42,
+            "pr_analysis": PRAnalysis(classification="minor"),
+        }
+        result = generate_checklist_node(state)
+
+        assert result["testing_checklist"] is items
+        mock_gen.assert_called_once_with(42, state["pr_analysis"])
+
+    @patch("pr_review_agent.graph.nodes.generate_testing_checklist")
+    def test_empty_checklist(self, mock_gen):
+        """When no checklist items are generated, returns empty list."""
+        mock_gen.return_value = []
+
+        state = {
+            "pr_number": 1,
+            "pr_analysis": PRAnalysis(classification="trivial"),
+        }
+        result = generate_checklist_node(state)
+
+        assert result["testing_checklist"] == []
+
+
+# ===========================================================================
+# Tests for generate_llm_brief_node with CI status
+# ===========================================================================
+
+class TestGenerateLlmBriefNodeCiStatus:
+    """Tests for ci_status being passed to generate_brief."""
+
+    @patch("pr_review_agent.graph.nodes.generate_brief")
+    def test_ci_status_passed(self, mock_generate):
+        """CI status from state is forwarded to generate_brief."""
+        brief = ReviewBrief(
+            summary="Brief",
+            llm_recommendation="approve",
+            llm_confidence=0.9,
+        )
+        mock_generate.return_value = brief
+
+        ci = {"all_passed": True, "checks": [{"name": "lint", "status": "success"}]}
+        state = {
+            "notion_contexts": [],
+            "pr_data": PRData(number=1, title="T", author="a"),
+            "pr_analysis": PRAnalysis(classification="minor"),
+            "diff_text": "diff",
+            "ci_status": ci,
+        }
+        result = generate_llm_brief_node(state)
+
+        assert result["review_brief"] is brief
+        mock_generate.assert_called_once_with(
+            notion_contexts=[],
+            pr_data=state["pr_data"],
+            analysis=state["pr_analysis"],
+            diff_text="diff",
+            ci_status=ci,
+            model="claude-sonnet-4-20250514",
+        )

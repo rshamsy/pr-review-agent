@@ -7,7 +7,50 @@ import json
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from pr_review_agent.models.notion import RelevanceScore
+from pr_review_agent.models.notion import NotionContext, RelevanceScore
+
+EXTRACT_SECTIONS_PROMPT = """You are a context extraction assistant. Given a PR summary and a Notion page, extract the sections that are relevant to the PR.
+
+Return the relevant text verbatim, preserving its original formatting. If nothing in the page is relevant to the PR, respond with exactly: NONE"""
+
+
+def extract_relevant_sections(
+    pr_summary: str,
+    page_content: str,
+    page_title: str = "",
+    model: str = "claude-haiku-4-5-20251001",
+) -> str | None:
+    """Extract sections from a Notion page that are relevant to a PR.
+
+    Uses Claude Haiku to identify and extract relevant portions.
+    Returns the extracted text, or None if nothing is relevant.
+    """
+    if not page_content.strip():
+        return None
+
+    llm = ChatAnthropic(model=model, max_tokens=4096, temperature=0)
+
+    truncated_content = page_content[:8000]
+
+    messages = [
+        SystemMessage(content=EXTRACT_SECTIONS_PROMPT),
+        HumanMessage(content=f"""PR Summary:
+{pr_summary}
+
+Notion Page Title: {page_title}
+
+Notion Page Content:
+{truncated_content}"""),
+    ]
+
+    response = llm.invoke(messages)
+    content = response.content if isinstance(response.content, str) else str(response.content)
+
+    if content.strip().upper() == "NONE":
+        return None
+
+    return content.strip()
+
 
 RELEVANCE_SYSTEM_PROMPT = """You are a relevance scoring assistant. Given a PR summary and a Notion page content, assess whether the Notion page describes the intent/requirements behind the PR.
 

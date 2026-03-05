@@ -9,9 +9,10 @@ import pytest
 from rich.console import Console
 
 from pr_review_agent.models.brief import IntentDelta, ReviewBrief
+from pr_review_agent.models.migration import MigrationInfo, MigrationOperation
 from pr_review_agent.models.notion import NotionContext
 from pr_review_agent.models.pr import PRAnalysis, PRData
-from pr_review_agent.models.review import ReviewRecommendation
+from pr_review_agent.models.review import MissingTest, ReviewRecommendation, TestingChecklistItem
 from pr_review_agent.output.markdown import format_review_markdown
 from pr_review_agent.output.terminal import display_results
 
@@ -22,7 +23,7 @@ from pr_review_agent.output.terminal import display_results
 
 def _build_state(
     pr_data: PRData | None = None,
-    notion_context: NotionContext | None = None,
+    notion_contexts: list[NotionContext] | None = None,
     analysis: PRAnalysis | None = None,
     brief: ReviewBrief | None = None,
     recommendation: ReviewRecommendation | None = None,
@@ -31,8 +32,8 @@ def _build_state(
     state: dict[str, Any] = {}
     if pr_data is not None:
         state["pr_data"] = pr_data
-    if notion_context is not None:
-        state["notion_context"] = notion_context
+    if notion_contexts is not None:
+        state["notion_contexts"] = notion_contexts
     if analysis is not None:
         state["pr_analysis"] = analysis
     if brief is not None:
@@ -60,7 +61,7 @@ class TestFormatReviewMarkdown:
     ) -> None:
         state = _build_state(
             pr_data=sample_pr_data,
-            notion_context=sample_notion_context,
+            notion_contexts=[sample_notion_context],
             analysis=sample_analysis,
             brief=sample_brief,
             recommendation=sample_recommendation,
@@ -80,7 +81,7 @@ class TestFormatReviewMarkdown:
     ) -> None:
         state = _build_state(
             pr_data=sample_pr_data,
-            notion_context=sample_notion_context,
+            notion_contexts=[sample_notion_context],
             analysis=sample_analysis,
             brief=sample_brief,
             recommendation=sample_recommendation,
@@ -99,7 +100,7 @@ class TestFormatReviewMarkdown:
     ) -> None:
         state = _build_state(
             pr_data=sample_pr_data,
-            notion_context=sample_notion_context,
+            notion_contexts=[sample_notion_context],
             analysis=sample_analysis,
             brief=sample_brief,
             recommendation=sample_recommendation,
@@ -120,7 +121,7 @@ class TestFormatReviewMarkdown:
     ) -> None:
         state = _build_state(
             pr_data=sample_pr_data,
-            notion_context=sample_notion_context,
+            notion_contexts=[sample_notion_context],
             analysis=sample_analysis,
             brief=sample_brief,
             recommendation=sample_recommendation,
@@ -140,7 +141,7 @@ class TestFormatReviewMarkdown:
     ) -> None:
         state = _build_state(
             pr_data=sample_pr_data,
-            notion_context=sample_notion_context,
+            notion_contexts=[sample_notion_context],
             analysis=sample_analysis,
             brief=sample_brief,
             recommendation=sample_recommendation,
@@ -160,7 +161,7 @@ class TestFormatReviewMarkdown:
     ) -> None:
         state = _build_state(
             pr_data=sample_pr_data,
-            notion_context=sample_notion_context,
+            notion_contexts=[sample_notion_context],
             analysis=sample_analysis,
             brief=sample_brief,
             recommendation=sample_recommendation,
@@ -184,7 +185,7 @@ class TestFormatReviewMarkdown:
     ) -> None:
         state = _build_state(
             pr_data=sample_pr_data,
-            notion_context=sample_notion_context,
+            notion_contexts=[sample_notion_context],
             analysis=sample_analysis,
             brief=sample_brief,
             recommendation=sample_recommendation,
@@ -207,7 +208,7 @@ class TestFormatReviewMarkdown:
     ) -> None:
         state = _build_state(
             pr_data=sample_pr_data,
-            notion_context=sample_notion_context,
+            notion_contexts=[sample_notion_context],
             analysis=sample_analysis,
             brief=sample_brief,
             recommendation=sample_recommendation,
@@ -293,6 +294,19 @@ class TestFormatReviewMarkdown:
         state = _build_state(
             brief=sample_brief,
             recommendation=sample_recommendation,
+        )
+        md = format_review_markdown(state)
+        assert "Feature Intent (from Notion)" not in md
+
+    def test_empty_notion_contexts_skips_intent_section(
+        self,
+        sample_brief: ReviewBrief,
+        sample_recommendation: ReviewRecommendation,
+    ) -> None:
+        state = _build_state(
+            brief=sample_brief,
+            recommendation=sample_recommendation,
+            notion_contexts=[],
         )
         md = format_review_markdown(state)
         assert "Feature Intent (from Notion)" not in md
@@ -441,7 +455,7 @@ class TestFormatReviewMarkdown:
         state = _build_state(
             brief=sample_brief,
             recommendation=sample_recommendation,
-            notion_context=notion,
+            notion_contexts=[notion],
         )
         md = format_review_markdown(state)
         assert "Bare Notion Page" in md
@@ -469,6 +483,32 @@ class TestFormatReviewMarkdown:
         assert "PARTIAL" in md
         assert "MISSING" in md
         assert "EXTRA" in md
+
+    def test_multiple_contexts_rendered(
+        self,
+        sample_brief: ReviewBrief,
+        sample_recommendation: ReviewRecommendation,
+    ) -> None:
+        """Multiple notion contexts are all rendered in the Feature Intent section."""
+        ctx1 = NotionContext(
+            page_id="p1", title="Feature Spec",
+            description="Main spec", page_url="https://notion.so/spec",
+        )
+        ctx2 = NotionContext(
+            page_id="p2", title="Standup Notes",
+            description="Daily notes", page_url="https://notion.so/standup",
+        )
+        state = _build_state(
+            brief=sample_brief,
+            recommendation=sample_recommendation,
+            notion_contexts=[ctx1, ctx2],
+        )
+        md = format_review_markdown(state)
+        assert "## Feature Intent (from Notion)" in md
+        assert "Feature Spec" in md
+        assert "Standup Notes" in md
+        assert "https://notion.so/spec" in md
+        assert "https://notion.so/standup" in md
 
 
 # ===========================================================================
@@ -581,3 +621,192 @@ class TestDisplayResults:
         quiet_console = Console(quiet=True)
         with patch("pr_review_agent.output.terminal.console", quiet_console):
             display_results(state)
+
+    def test_display_results_with_ci_status(
+        self,
+        sample_pr_data: PRData,
+        sample_analysis: PRAnalysis,
+        sample_brief: ReviewBrief,
+        sample_recommendation: ReviewRecommendation,
+    ) -> None:
+        """display_results renders CI status section without errors."""
+        state = _build_state(
+            pr_data=sample_pr_data,
+            analysis=sample_analysis,
+            brief=sample_brief,
+            recommendation=sample_recommendation,
+        )
+        state["ci_status"] = {
+            "all_passed": False,
+            "checks": [
+                {"name": "lint", "status": "success"},
+                {"name": "tests", "status": "failure"},
+            ],
+        }
+        quiet_console = Console(quiet=True)
+        with patch("pr_review_agent.output.terminal.console", quiet_console):
+            display_results(state)
+
+    def test_display_results_with_checklist(
+        self,
+        sample_pr_data: PRData,
+        sample_analysis: PRAnalysis,
+        sample_brief: ReviewBrief,
+        sample_recommendation: ReviewRecommendation,
+    ) -> None:
+        """display_results renders checklist panel without errors."""
+        state = _build_state(
+            pr_data=sample_pr_data,
+            analysis=sample_analysis,
+            brief=sample_brief,
+            recommendation=sample_recommendation,
+        )
+        state["testing_checklist"] = [
+            TestingChecklistItem(category="pre-flight", description="Verify deployment", priority="must"),
+        ]
+        quiet_console = Console(quiet=True)
+        with patch("pr_review_agent.output.terminal.console", quiet_console):
+            display_results(state)
+
+    def test_display_results_with_migrations(
+        self,
+        sample_pr_data: PRData,
+        sample_brief: ReviewBrief,
+        sample_recommendation: ReviewRecommendation,
+    ) -> None:
+        """display_results renders migration details without errors."""
+        migration = MigrationInfo(
+            path="m.sql", name="add_table", risk_level="medium",
+            operations=[MigrationOperation(type="CREATE_TABLE", table="users", details="", destructive=False)],
+            warnings=["Check indexes"], rollback_complexity="easy",
+        )
+        analysis = PRAnalysis(classification="major", migrations=[migration])
+        state = _build_state(
+            pr_data=sample_pr_data,
+            analysis=analysis,
+            brief=sample_brief,
+            recommendation=sample_recommendation,
+        )
+        quiet_console = Console(quiet=True)
+        with patch("pr_review_agent.output.terminal.console", quiet_console):
+            display_results(state)
+
+
+# ===========================================================================
+# Markdown output — new sections
+# ===========================================================================
+
+
+class TestFormatReviewMarkdownNewSections:
+    """Tests for new markdown output sections: CI status, migrations, missing tests, checklist."""
+
+    def test_ci_status_rendered(
+        self,
+        sample_brief: ReviewBrief,
+        sample_recommendation: ReviewRecommendation,
+    ) -> None:
+        """CI status checks appear in markdown."""
+        state = _build_state(brief=sample_brief, recommendation=sample_recommendation)
+        state["ci_status"] = {
+            "checks": [
+                {"name": "ESLint", "status": "success"},
+                {"name": "Vitest", "status": "failure"},
+            ],
+        }
+        md = format_review_markdown(state)
+        assert "## CI/CD Status" in md
+        assert "ESLint" in md
+        assert "Vitest" in md
+        assert "&#x2705;" in md  # success emoji
+        assert "&#x274C;" in md  # failure emoji
+
+    def test_no_ci_status_skips_section(
+        self,
+        sample_brief: ReviewBrief,
+        sample_recommendation: ReviewRecommendation,
+    ) -> None:
+        """No CI status data means no CI/CD Status section."""
+        state = _build_state(brief=sample_brief, recommendation=sample_recommendation)
+        md = format_review_markdown(state)
+        assert "## CI/CD Status" not in md
+
+    def test_migration_details_rendered(
+        self,
+        sample_brief: ReviewBrief,
+        sample_recommendation: ReviewRecommendation,
+    ) -> None:
+        """Per-migration breakdown appears in markdown."""
+        migration = MigrationInfo(
+            path="m.sql", name="add_payments", risk_level="medium",
+            operations=[
+                MigrationOperation(type="CREATE_TABLE", table="Payment", details="", destructive=False),
+            ],
+            warnings=["Review indexes"],
+            rollback_complexity="easy",
+        )
+        analysis = PRAnalysis(classification="major", migrations=[migration])
+        state = _build_state(
+            analysis=analysis,
+            brief=sample_brief,
+            recommendation=sample_recommendation,
+        )
+        md = format_review_markdown(state)
+        assert "**add_payments**" in md
+        assert "risk: medium" in md
+        assert "rollback: easy" in md
+        assert "CREATE_TABLE on `Payment`" in md
+        assert "Review indexes" in md
+
+    def test_missing_tests_rendered(
+        self,
+        sample_brief: ReviewBrief,
+        sample_recommendation: ReviewRecommendation,
+    ) -> None:
+        """Missing tests section appears in markdown."""
+        analysis = PRAnalysis(
+            classification="major",
+            missing_tests=[
+                MissingTest(
+                    service_file="lib/services/pay.ts",
+                    reason="new_service_no_test",
+                    severity="critical",
+                    suggested_test_file="tests/lib/services/pay.test.ts",
+                ),
+            ],
+        )
+        state = _build_state(
+            analysis=analysis,
+            brief=sample_brief,
+            recommendation=sample_recommendation,
+        )
+        md = format_review_markdown(state)
+        assert "## Missing Tests" in md
+        assert "CRITICAL" in md
+        assert "`lib/services/pay.ts`" in md
+        assert "`tests/lib/services/pay.test.ts`" in md
+
+    def test_checklist_rendered(
+        self,
+        sample_brief: ReviewBrief,
+        sample_recommendation: ReviewRecommendation,
+    ) -> None:
+        """Browser testing checklist appears in markdown."""
+        state = _build_state(brief=sample_brief, recommendation=sample_recommendation)
+        state["testing_checklist"] = [
+            TestingChecklistItem(category="pre-flight", description="Verify deployment", priority="must"),
+            TestingChecklistItem(category="integration", description="Test GET /api/pay", priority="should"),
+        ]
+        md = format_review_markdown(state)
+        assert "## Browser Testing Checklist" in md
+        assert "Verify deployment" in md
+        assert "Test GET /api/pay" in md
+
+    def test_no_checklist_skips_section(
+        self,
+        sample_brief: ReviewBrief,
+        sample_recommendation: ReviewRecommendation,
+    ) -> None:
+        """No checklist data means no checklist section."""
+        state = _build_state(brief=sample_brief, recommendation=sample_recommendation)
+        md = format_review_markdown(state)
+        assert "## Browser Testing Checklist" not in md

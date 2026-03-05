@@ -17,13 +17,13 @@ console = Console()
 
 def confirm_context(
     scored_results: list[RelevanceScore],
-) -> tuple[str, NotionContext | None, str | None]:
+) -> tuple[str, list[NotionContext], str | None]:
     """Interactive loop: present context to user and get confirmation.
 
     Returns:
-        (user_choice, notion_context, user_provided_url)
+        (user_choice, notion_contexts, user_provided_url)
         - user_choice: "confirmed" | "provide_url" | "partial" | "exit"
-        - notion_context: populated if user confirmed
+        - notion_contexts: list of selected NotionContext objects
         - user_provided_url: populated if user chose to provide a URL
     """
     if not scored_results:
@@ -31,8 +31,8 @@ def confirm_context(
             "[bold red]No relevant Notion pages found.[/bold red]\n\n"
             "The agent could not find any Notion pages matching this PR.\n"
             "You can:\n"
-            "  [3] Provide a specific Notion page URL\n"
-            "  [4] Exit and create a Notion page first",
+            "  [u] Provide a specific Notion page URL\n"
+            "  [x] Exit and create a Notion page first",
             title="No Context Found",
         ))
         return _prompt_no_results()
@@ -58,56 +58,88 @@ def confirm_context(
             console.print(f"  {i}. [{result.score}/10] {result.title}")
 
     console.print()
-    choice = Prompt.ask(
-        "Is this the intent behind this PR?",
-        choices=["1", "2", "3", "4"],
-        default="1",
+    console.print(
+        "Enter page number(s) to select (e.g. 1 or 1,2), or: "
+        "s=re-search, u=provide URL, x=exit"
     )
 
-    if choice == "1":
-        # Confirmed
-        context = NotionContext(
-            page_id=top.page_id,
-            page_url=top.url,
-            title=top.title,
-            description=top.explanation,
-            requirements=top.key_matches,
-            raw_content=top.content,
-        )
-        return "confirmed", context, None
+    while True:
+        choice = Prompt.ask("Selection", default="1")
+        lower = choice.strip().lower()
 
-    elif choice == "2":
-        # Partial — user wants to enrich the page
-        console.print(
-            "\n[yellow]Please go to Notion and add more detail to the page, "
-            "then press Enter to re-search.[/yellow]"
-        )
-        input()  # Wait for user
-        return "partial", None, None
+        if lower == "s":
+            console.print(
+                "\n[yellow]Please go to Notion and add more detail to the page, "
+                "then press Enter to re-search.[/yellow]"
+            )
+            input()  # Wait for user
+            return "partial", [], None
 
-    elif choice == "3":
-        # User provides a URL
-        url = Prompt.ask("Paste the Notion page URL")
-        return "provide_url", None, url
+        if lower == "u":
+            url = Prompt.ask("Paste the Notion page URL")
+            return "provide_url", [], url
 
-    else:
-        # Exit
-        return "exit", None, None
+        if lower == "x":
+            return "exit", [], None
+
+        # Try to parse as comma-separated numbers
+        contexts = _parse_selection(choice, scored_results)
+        if contexts is not None:
+            return "confirmed", contexts, None
+
+        console.print("[red]Invalid selection. Try again.[/red]")
 
 
-def _prompt_no_results() -> tuple[str, NotionContext | None, str | None]:
+def _parse_selection(
+    raw: str,
+    scored_results: list[RelevanceScore],
+) -> list[NotionContext] | None:
+    """Parse comma-separated indices and build NotionContext list.
+
+    Returns None if any index is invalid (non-integer or out of range).
+    """
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    if not parts:
+        return None
+
+    contexts: list[NotionContext] = []
+    seen: set[int] = set()
+    for part in parts:
+        try:
+            idx = int(part)
+        except ValueError:
+            return None
+        if idx < 1 or idx > len(scored_results):
+            return None
+        if idx in seen:
+            continue
+        seen.add(idx)
+        result = scored_results[idx - 1]
+        contexts.append(NotionContext(
+            page_id=result.page_id,
+            page_url=result.url,
+            title=result.title,
+            description=result.explanation,
+            requirements=result.key_matches,
+            raw_content=result.content,
+        ))
+    return contexts if contexts else None
+
+
+def _prompt_no_results() -> tuple[str, list[NotionContext], str | None]:
     """Handle the case where no results were found."""
-    choice = Prompt.ask(
-        "Choose an option",
-        choices=["3", "4"],
-        default="4",
-    )
+    while True:
+        choice = Prompt.ask("Choose an option (u=provide URL, x=exit)", default="x")
+        lower = choice.strip().lower()
 
-    if choice == "3":
-        url = Prompt.ask("Paste the Notion page URL")
-        return "provide_url", None, url
+        if lower == "u":
+            url = Prompt.ask("Paste the Notion page URL")
+            return "provide_url", [], url
 
-    return "exit", None, None
+        if lower == "x":
+            return "exit", [], None
+
+        console.print("[red]Invalid choice. Try again.[/red]")
 
 
 def display_exit_instructions() -> None:

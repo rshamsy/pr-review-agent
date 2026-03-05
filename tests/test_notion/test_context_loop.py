@@ -35,7 +35,7 @@ def _make_scored_results(count: int = 1) -> list[RelevanceScore]:
 
 
 # ---------------------------------------------------------------------------
-# Test "confirmed" path
+# Test "confirmed" path — single select
 # ---------------------------------------------------------------------------
 
 class TestConfirmedPath:
@@ -43,13 +43,15 @@ class TestConfirmedPath:
 
     @patch("pr_review_agent.notion.context_loop.Prompt.ask", return_value="1")
     @patch("pr_review_agent.notion.context_loop.console")
-    def test_confirmed_returns_context(self, mock_console, mock_ask):
-        """Selecting '1' returns ('confirmed', NotionContext, None)."""
+    def test_confirmed_returns_context_list(self, mock_console, mock_ask):
+        """Selecting '1' returns ('confirmed', [NotionContext], None)."""
         scored = _make_scored_results(2)
-        choice, context, url = confirm_context(scored)
+        choice, contexts, url = confirm_context(scored)
 
         assert choice == "confirmed"
-        assert isinstance(context, NotionContext)
+        assert isinstance(contexts, list)
+        assert len(contexts) == 1
+        assert isinstance(contexts[0], NotionContext)
         assert url is None
 
     @patch("pr_review_agent.notion.context_loop.Prompt.ask", return_value="1")
@@ -57,76 +59,115 @@ class TestConfirmedPath:
     def test_confirmed_context_has_correct_fields(self, mock_console, mock_ask):
         """The returned NotionContext is populated from the top scored result."""
         scored = _make_scored_results(1)
-        choice, context, url = confirm_context(scored)
+        choice, contexts, url = confirm_context(scored)
 
-        assert context.page_id == "page-0"
-        assert context.page_url == "https://notion.so/page-0"
-        assert context.title == "Test Page 0"
-        assert context.description == "Explanation for page 0"
-        assert context.requirements == ["match-0-a", "match-0-b"]
-        assert "Content for page 0" in context.raw_content
+        ctx = contexts[0]
+        assert ctx.page_id == "page-0"
+        assert ctx.page_url == "https://notion.so/page-0"
+        assert ctx.title == "Test Page 0"
+        assert ctx.description == "Explanation for page 0"
+        assert ctx.requirements == ["match-0-a", "match-0-b"]
+        assert "Content for page 0" in ctx.raw_content
 
 
 # ---------------------------------------------------------------------------
-# Test "provide_url" path
+# Test multi-select path
 # ---------------------------------------------------------------------------
 
-class TestProvideUrlPath:
-    """User selects '3' to provide a specific Notion URL."""
+class TestMultiSelectPath:
+    """User selects multiple pages like '1,2'."""
+
+    @patch("pr_review_agent.notion.context_loop.Prompt.ask", return_value="1,2")
+    @patch("pr_review_agent.notion.context_loop.console")
+    def test_multi_select_returns_multiple_contexts(self, mock_console, mock_ask):
+        """Selecting '1,2' returns two NotionContext objects."""
+        scored = _make_scored_results(3)
+        choice, contexts, url = confirm_context(scored)
+
+        assert choice == "confirmed"
+        assert len(contexts) == 2
+        assert contexts[0].page_id == "page-0"
+        assert contexts[1].page_id == "page-1"
+        assert url is None
+
+    @patch("pr_review_agent.notion.context_loop.Prompt.ask", return_value="2,3")
+    @patch("pr_review_agent.notion.context_loop.console")
+    def test_multi_select_non_first_results(self, mock_console, mock_ask):
+        """Selecting '2,3' returns the 2nd and 3rd results."""
+        scored = _make_scored_results(3)
+        choice, contexts, url = confirm_context(scored)
+
+        assert choice == "confirmed"
+        assert len(contexts) == 2
+        assert contexts[0].page_id == "page-1"
+        assert contexts[1].page_id == "page-2"
 
     @patch("pr_review_agent.notion.context_loop.Prompt.ask")
     @patch("pr_review_agent.notion.context_loop.console")
-    def test_provide_url_returns_url(self, mock_console, mock_ask):
-        """Selecting '3' then entering a URL returns ('provide_url', None, url)."""
-        # First call: choice selection, second call: URL input
-        mock_ask.side_effect = ["3", "https://notion.so/my-page"]
-        scored = _make_scored_results(1)
+    def test_multi_select_invalid_index_retries(self, mock_console, mock_ask):
+        """Invalid index (e.g. 0 or out-of-range) causes retry."""
+        # First ask returns invalid "0", second returns valid "1"
+        mock_ask.side_effect = ["0", "1"]
+        scored = _make_scored_results(2)
+        choice, contexts, url = confirm_context(scored)
 
-        choice, context, url = confirm_context(scored)
+        assert choice == "confirmed"
+        assert len(contexts) == 1
+        assert contexts[0].page_id == "page-0"
 
-        assert choice == "provide_url"
-        assert context is None
-        assert url == "https://notion.so/my-page"
+    @patch("pr_review_agent.notion.context_loop.Prompt.ask", return_value="1,1")
+    @patch("pr_review_agent.notion.context_loop.console")
+    def test_multi_select_deduplicates(self, mock_console, mock_ask):
+        """Duplicate indices are deduplicated."""
+        scored = _make_scored_results(2)
+        choice, contexts, url = confirm_context(scored)
+
+        assert choice == "confirmed"
+        assert len(contexts) == 1
+        assert contexts[0].page_id == "page-0"
 
 
 # ---------------------------------------------------------------------------
-# Test "partial" path
+# Test letter choices: s, u, x
 # ---------------------------------------------------------------------------
 
-class TestPartialPath:
-    """User selects '2' to indicate partial context."""
+class TestLetterChoices:
+    """User enters s, u, or x."""
 
     @patch("builtins.input", return_value="")  # simulate pressing Enter
-    @patch("pr_review_agent.notion.context_loop.Prompt.ask", return_value="2")
+    @patch("pr_review_agent.notion.context_loop.Prompt.ask", return_value="s")
     @patch("pr_review_agent.notion.context_loop.console")
-    def test_partial_returns_correctly(self, mock_console, mock_ask, mock_input):
-        """Selecting '2' returns ('partial', None, None)."""
+    def test_s_returns_partial(self, mock_console, mock_ask, mock_input):
+        """Entering 's' returns ('partial', [], None)."""
         scored = _make_scored_results(1)
-
-        choice, context, url = confirm_context(scored)
+        choice, contexts, url = confirm_context(scored)
 
         assert choice == "partial"
-        assert context is None
+        assert contexts == []
         assert url is None
 
-
-# ---------------------------------------------------------------------------
-# Test "exit" path
-# ---------------------------------------------------------------------------
-
-class TestExitPath:
-    """User selects '4' to exit without context."""
-
-    @patch("pr_review_agent.notion.context_loop.Prompt.ask", return_value="4")
+    @patch("pr_review_agent.notion.context_loop.Prompt.ask")
     @patch("pr_review_agent.notion.context_loop.console")
-    def test_exit_returns_correctly(self, mock_console, mock_ask):
-        """Selecting '4' returns ('exit', None, None)."""
+    def test_u_returns_provide_url(self, mock_console, mock_ask):
+        """Entering 'u' then a URL returns ('provide_url', [], url)."""
+        mock_ask.side_effect = ["u", "https://notion.so/my-page"]
         scored = _make_scored_results(1)
 
-        choice, context, url = confirm_context(scored)
+        choice, contexts, url = confirm_context(scored)
+
+        assert choice == "provide_url"
+        assert contexts == []
+        assert url == "https://notion.so/my-page"
+
+    @patch("pr_review_agent.notion.context_loop.Prompt.ask", return_value="x")
+    @patch("pr_review_agent.notion.context_loop.console")
+    def test_x_returns_exit(self, mock_console, mock_ask):
+        """Entering 'x' returns ('exit', [], None)."""
+        scored = _make_scored_results(1)
+        choice, contexts, url = confirm_context(scored)
 
         assert choice == "exit"
-        assert context is None
+        assert contexts == []
         assert url is None
 
 
@@ -137,29 +178,29 @@ class TestExitPath:
 class TestEmptyResults:
     """No Notion results found."""
 
-    @patch("pr_review_agent.notion.context_loop.Prompt.ask", return_value="4")
+    @patch("pr_review_agent.notion.context_loop.Prompt.ask", return_value="x")
     @patch("pr_review_agent.notion.context_loop.console")
     def test_no_results_exit(self, mock_console, mock_ask):
-        """With empty results and choice '4', returns ('exit', None, None)."""
-        choice, context, url = confirm_context([])
+        """With empty results and choice 'x', returns ('exit', [], None)."""
+        choice, contexts, url = confirm_context([])
 
         assert choice == "exit"
-        assert context is None
+        assert contexts == []
         assert url is None
 
     @patch("pr_review_agent.notion.context_loop.Prompt.ask")
     @patch("pr_review_agent.notion.context_loop.console")
     def test_no_results_provide_url(self, mock_console, mock_ask):
-        """With empty results and choice '3', user can provide a URL."""
-        mock_ask.side_effect = ["3", "https://notion.so/custom-page"]
+        """With empty results and choice 'u', user can provide a URL."""
+        mock_ask.side_effect = ["u", "https://notion.so/custom-page"]
 
-        choice, context, url = confirm_context([])
+        choice, contexts, url = confirm_context([])
 
         assert choice == "provide_url"
-        assert context is None
+        assert contexts == []
         assert url == "https://notion.so/custom-page"
 
-    @patch("pr_review_agent.notion.context_loop.Prompt.ask", return_value="4")
+    @patch("pr_review_agent.notion.context_loop.Prompt.ask", return_value="x")
     @patch("pr_review_agent.notion.context_loop.console")
     def test_no_results_displays_panel(self, mock_console, mock_ask):
         """When no results, a panel is displayed to the user."""
@@ -197,10 +238,11 @@ class TestMultipleResults:
     @patch("pr_review_agent.notion.context_loop.Prompt.ask", return_value="1")
     @patch("pr_review_agent.notion.context_loop.console")
     def test_multiple_results_confirmed_uses_top(self, mock_console, mock_ask):
-        """With multiple results, confirming uses the highest-scored result."""
+        """With multiple results, confirming '1' uses the highest-scored result."""
         scored = _make_scored_results(3)
-        choice, context, url = confirm_context(scored)
+        choice, contexts, url = confirm_context(scored)
 
         assert choice == "confirmed"
-        assert context.page_id == "page-0"  # top result
-        assert context.title == "Test Page 0"
+        assert len(contexts) == 1
+        assert contexts[0].page_id == "page-0"  # top result
+        assert contexts[0].title == "Test Page 0"

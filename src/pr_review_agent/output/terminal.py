@@ -38,8 +38,19 @@ def display_results(state: dict[str, Any], verbose: bool = False) -> None:
         title="PR Review Brief",
     ))
 
+    # CI/CD Status
+    ci_status = state.get("ci_status", {})
+    if ci_status.get("checks"):
+        console.print("\n[bold]CI/CD Status:[/bold]")
+        for check in ci_status["checks"]:
+            icon = {"success": "[green]PASS[/green]", "failure": "[red]FAIL[/red]", "pending": "[yellow]PENDING[/yellow]"}.get(
+                check.get("status", ""), "?"
+            )
+            console.print(f"  {icon} {check.get('name', 'unknown')}")
+        console.print()
+
     # Summary
-    console.print(f"\n[bold]Summary:[/bold] {brief.summary}\n")
+    console.print(f"[bold]Summary:[/bold] {brief.summary}\n")
 
     # Intent vs Implementation deltas table
     if brief.deltas:
@@ -90,10 +101,30 @@ def display_results(state: dict[str, Any], verbose: bool = False) -> None:
             console.print(f"  API Routes: {len(analysis.api_routes)}")
         if analysis.ui_changes:
             console.print(f"  UI Changes: {len(analysis.ui_changes)}")
-        if analysis.migrations:
-            console.print(f"  Migrations: {len(analysis.migrations)}")
         if analysis.risks:
             console.print(f"  Risks: {len(analysis.risks)}")
+        console.print()
+
+    # Migration details
+    if analysis and analysis.migrations:
+        console.print("[bold]Migrations:[/bold]")
+        for m in analysis.migrations:
+            risk_color = {"high": "red", "medium": "yellow", "low": "green"}.get(m.risk_level, "white")
+            console.print(f"  [{risk_color}]{m.name}[/{risk_color}] — risk: {m.risk_level}, rollback: {m.rollback_complexity}")
+            for op in m.operations:
+                destructive_tag = " [red][DESTRUCTIVE][/red]" if op.destructive else ""
+                console.print(f"    {op.type} on {op.table}{destructive_tag}")
+            for warning in m.warnings:
+                console.print(f"    [yellow]! {warning}[/yellow]")
+        console.print()
+
+    # Missing tests
+    if analysis and analysis.missing_tests:
+        console.print("[bold]Missing Tests:[/bold]")
+        for t in analysis.missing_tests:
+            severity_color = {"critical": "red", "high": "yellow", "medium": "white"}.get(t.severity, "white")
+            console.print(f"  [{severity_color}]{t.severity.upper()}[/{severity_color}]: {t.service_file}")
+            console.print(f"    Suggested: {t.suggested_test_file}")
         console.print()
 
     # Positive findings
@@ -119,6 +150,14 @@ def display_results(state: dict[str, Any], verbose: bool = False) -> None:
         title="Recommendation",
         border_style=verdict_color,
     ))
+
+    # Browser testing checklist
+    checklist = state.get("testing_checklist", [])
+    if checklist:
+        from pr_review_agent.analyzers.checklist_generator import format_checklist
+
+        console.print()
+        console.print(Panel(format_checklist(checklist), title="Browser Testing Checklist"))
 
 
 def _format_blockers(rec: Any) -> str:

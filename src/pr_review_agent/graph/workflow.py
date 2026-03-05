@@ -13,6 +13,7 @@ from pr_review_agent.graph.nodes import (
     fetch_pr_data,
     fetch_specific_page_node,
     format_output_node,
+    generate_checklist_node,
     generate_llm_brief_node,
     score_relevance_node,
     search_notion_node,
@@ -34,6 +35,7 @@ def build_workflow() -> StateGraph:
     graph.add_node("fetch_specific_page", fetch_specific_page_node)
     graph.add_node("exit_with_instructions", exit_with_instructions_node)
     graph.add_node("analyze_pr", analyze_pr_node)
+    graph.add_node("generate_checklist", generate_checklist_node)
     graph.add_node("generate_llm_brief", generate_llm_brief_node)
     graph.add_node("compute_recommendation", compute_recommendation_node)
     graph.add_node("format_output", format_output_node)
@@ -71,7 +73,8 @@ def build_workflow() -> StateGraph:
     graph.add_edge("exit_with_instructions", END)
 
     # Main analysis pipeline
-    graph.add_edge("analyze_pr", "generate_llm_brief")
+    graph.add_edge("analyze_pr", "generate_checklist")
+    graph.add_edge("generate_checklist", "generate_llm_brief")
     graph.add_edge("generate_llm_brief", "compute_recommendation")
     graph.add_edge("compute_recommendation", "format_output")
     graph.add_edge("format_output", END)
