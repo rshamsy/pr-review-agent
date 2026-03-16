@@ -24,3 +24,6 @@ htmlcov/
 .idea/
 *.swp
 *.swo
+
+article.md
+article-extra.md
