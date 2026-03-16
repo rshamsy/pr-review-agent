@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -97,8 +98,18 @@ class AgentConfig(BaseSettings):
 
 
 def get_config() -> AgentConfig:
-    """Load configuration from environment variables."""
-    return AgentConfig()
+    """Load configuration from environment variables.
+
+    Also exports key variables to os.environ so that downstream libraries
+    (e.g. langchain-anthropic's ChatAnthropic) that read env vars directly
+    can find them.
+    """
+    config = AgentConfig()
+    if config.anthropic_api_key and not os.environ.get("ANTHROPIC_API_KEY"):
+        os.environ["ANTHROPIC_API_KEY"] = config.anthropic_api_key
+    if config.notion_api_key and not os.environ.get("NOTION_API_KEY"):
+        os.environ["NOTION_API_KEY"] = config.notion_api_key
+    return config
 
 
 def validate_config() -> list[str]:
