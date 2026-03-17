@@ -85,7 +85,7 @@ class NotionMCPClient:
     """Async client for Notion via MCP server."""
 
     def __init__(self, notion_api_key: str | None = None):
-        self._api_key = notion_api_key or os.environ.get("NOTION_API_KEY", "")
+        self._api_key = (notion_api_key or os.environ.get("NOTION_API_KEY", "")).strip()
         self._session: ClientSession | None = None
 
     @asynccontextmanager
@@ -127,6 +127,24 @@ class NotionMCPClient:
             raise RuntimeError("Not connected. Use 'async with client.connect()' first.")
 
         result = await self._session.call_tool(name, arguments)
+
+        # Check if the MCP tool returned an error
+        if getattr(result, "isError", False):
+            error_text = ""
+            if hasattr(result, "content"):
+                for block in result.content:
+                    if hasattr(block, "text"):
+                        error_text = block.text
+                        break
+            if "401" in error_text or "Unauthorized" in error_text:
+                raise RuntimeError(
+                    "Notion API returned 401 Unauthorized. "
+                    "Check that your NOTION_API_KEY is valid and the integration "
+                    "is connected to the relevant pages "
+                    "(open page → ··· → Add connections)."
+                )
+            raise RuntimeError(f"Notion MCP tool error: {error_text}")
+
         return result
 
     async def search_pages(self, query: str) -> list[dict[str, Any]]:

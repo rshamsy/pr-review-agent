@@ -39,7 +39,7 @@ def update_user_env(key: str, value: str) -> Path:
 
     USER_ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    new_line = f"{key}={value}"
+    new_line = f"{key}={value.strip()}"
     if USER_ENV_FILE.exists():
         lines = USER_ENV_FILE.read_text().splitlines()
         replaced = False

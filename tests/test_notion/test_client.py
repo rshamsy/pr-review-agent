@@ -6,6 +6,7 @@ Mocks the MCP session to avoid needing a real Notion server.
 from __future__ import annotations
 
 import json
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -436,11 +437,13 @@ class TestConnect:
     @pytest.mark.asyncio
     async def test_connect_raises_when_no_api_key(self):
         """connect() raises RuntimeError when API key is empty."""
-        client = NotionMCPClient(notion_api_key="")
+        with patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("NOTION_API_KEY", None)
+            client = NotionMCPClient(notion_api_key="")
 
-        with pytest.raises(RuntimeError, match="NOTION_API_KEY is not set"):
-            async with client.connect():
-                pass
+            with pytest.raises(RuntimeError, match="NOTION_API_KEY is not set"):
+                async with client.connect():
+                    pass
 
     @pytest.mark.asyncio
     async def test_connect_raises_when_api_key_none(self):
