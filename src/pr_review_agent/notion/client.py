@@ -81,11 +81,24 @@ def _unwrap_exception(exc: BaseException) -> str:
     return str(exc)
 
 
+def _unwrap_runtime_error(exc: BaseException) -> RuntimeError | None:
+    """If *exc* is an ExceptionGroup hiding a RuntimeError, return it."""
+    if isinstance(exc, RuntimeError):
+        return exc
+    if isinstance(exc, BaseExceptionGroup):
+        for sub in exc.exceptions:
+            found = _unwrap_runtime_error(sub)
+            if found is not None:
+                return found
+    return None
+
+
 class NotionMCPClient:
     """Async client for Notion via MCP server."""
 
     def __init__(self, notion_api_key: str | None = None):
-        self._api_key = (notion_api_key or os.environ.get("NOTION_API_KEY", "")).strip()
+        self._api_key = (notion_api_key or os.environ.get("NOTION_API_KEY", "")).strip().strip("'\"")
+
         self._session: ClientSession | None = None
 
     @asynccontextmanager
@@ -115,6 +128,11 @@ class NotionMCPClient:
         except RuntimeError:
             raise
         except BaseException as exc:
+            # Async cleanup may wrap our RuntimeError in an ExceptionGroup.
+            # Unwrap it so the original clear message propagates.
+            inner = _unwrap_runtime_error(exc)
+            if inner is not None:
+                raise inner from exc
             detail = _unwrap_exception(exc)
             raise RuntimeError(
                 f"Failed to connect to Notion MCP server: {detail}. "
@@ -147,6 +165,20 @@ class NotionMCPClient:
 
         return result
 
+    @staticmethod
+    def _check_error_text(text: str) -> None:
+        """Raise RuntimeError if *text* looks like a Notion API error."""
+        if "401" in text and ("Unauthorized" in text or "unauthorized" in text):
+            raise RuntimeError(
+                "Notion API returned 401 Unauthorized. "
+                "Check that your NOTION_API_KEY is valid and the integration "
+                "is connected to the relevant pages "
+                "(open page → ··· → Add connections)."
+            )
+        # Catch other HTTP errors surfaced by the MCP server
+        if text.lstrip().startswith("Error") or "status: 4" in text or "status: 5" in text:
+            raise RuntimeError(f"Notion API error: {text[:300]}")
+
     async def search_pages(self, query: str) -> list[dict[str, Any]]:
         """Search Notion pages by query text."""
         result = await self._call_tool("API-post-search", {"query": query})
@@ -155,6 +187,8 @@ class NotionMCPClient:
         if hasattr(result, "content"):
             for block in result.content:
                 if hasattr(block, "text"):
+                    # Detect error responses that weren't flagged via isError
+                    self._check_error_text(block.text)
                     try:
                         data = json.loads(block.text)
                         if isinstance(data, list):
@@ -190,6 +224,7 @@ class NotionMCPClient:
         if hasattr(result, "content"):
             for block in result.content:
                 if hasattr(block, "text"):
+                    self._check_error_text(block.text)
                     text_parts.append(block.text)
 
         return "\n".join(text_parts)

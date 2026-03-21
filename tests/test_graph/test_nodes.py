@@ -795,7 +795,6 @@ class TestSearchNotionNodeErrorHandling:
 
         assert result["notion_results"] == []
         assert result["supplementary_contexts"] == []
-        assert "Notion connection failed" in result["error"]
         assert "server process exited" in result["error"]
 
     @patch("pr_review_agent.config.get_config")

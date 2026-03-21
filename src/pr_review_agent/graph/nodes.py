@@ -108,8 +108,8 @@ def search_notion_node(state: AgentState) -> dict:
         results, supplementary = asyncio.run(_search())
     except BaseException as exc:
         msg = _extract_mcp_error(exc)
-        console.print(f"[red]Notion MCP error: {msg}[/red]")
-        return {"notion_results": [], "supplementary_contexts": [], "error": f"Notion connection failed: {msg}"}
+        console.print(f"[red]Notion error: {msg}[/red]")
+        return {"notion_results": [], "supplementary_contexts": [], "error": msg}
 
     console.print(f"  Found {len(results)} potential match(es)")
     if supplementary:
