@@ -159,6 +159,36 @@ def display_results(state: dict[str, Any], verbose: bool = False) -> None:
         console.print()
         console.print(Panel(format_checklist(checklist), title="Browser Testing Checklist"))
 
+    # Role-based testing
+    role_pathways = state.get("role_testing_pathways", [])
+    if role_pathways:
+        console.print()
+
+        role_table = Table(title="Role-Based Testing Pathways")
+        role_table.add_column("Role", style="bold cyan")
+        role_table.add_column("Accessible Routes", style="green")
+        role_table.add_column("Restricted Routes", style="red")
+        role_table.add_column("Steps", justify="center")
+
+        for pathway in role_pathways:
+            role_table.add_row(
+                pathway.role,
+                ", ".join(pathway.accessible_routes) or "—",
+                ", ".join(pathway.restricted_routes) or "—",
+                str(len(pathway.steps)),
+            )
+
+        console.print(role_table)
+
+        for pathway in role_pathways:
+            console.print(f"\n[bold cyan]{pathway.role.title()}[/bold cyan]: {pathway.description}")
+            console.print(f"  Login: [dim]{pathway.login_hint}[/dim]")
+            for step in pathway.steps:
+                priority_color = {"must": "red", "should": "yellow", "nice-to-have": "dim"}.get(step.priority, "white")
+                url_part = f" [dim]({step.url})[/dim]" if step.url else ""
+                console.print(f"  [{priority_color}][{step.priority.upper()}][/{priority_color}] {step.action}{url_part}")
+                console.print(f"         Expected: {step.expected}")
+
 
 def _format_blockers(rec: Any) -> str:
     lines = "\n\n[bold red]Blockers:[/bold red]"

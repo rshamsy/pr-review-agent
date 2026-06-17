@@ -33,6 +33,22 @@ class TestingChecklistItem(BaseModel):
     priority: Literal["must", "should", "nice-to-have"]
 
 
+class RoleTestStep(BaseModel):
+    action: str
+    expected: str
+    url: str | None = None
+    priority: Literal["must", "should", "nice-to-have"]
+
+
+class RoleTestingPathway(BaseModel):
+    role: str
+    description: str
+    login_hint: str
+    accessible_routes: list[str] = Field(default_factory=list)
+    restricted_routes: list[str] = Field(default_factory=list)
+    steps: list[RoleTestStep] = Field(default_factory=list)
+
+
 class ReviewRecommendation(BaseModel):
     verdict: Literal["approve", "request_changes", "needs_discussion"]
     blockers: list[str] = Field(default_factory=list)

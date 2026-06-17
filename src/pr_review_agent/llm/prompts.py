@@ -74,3 +74,63 @@ Risks: {risks_summary}
 
 ## PR Diff
 {diff_text}"""
+
+
+ROLE_TESTING_SYSTEM = """You are a QA testing specialist focused on role-based access control (RBAC) testing.
+
+Given code snippets containing role/auth patterns, Notion feature context, and changed routes/pages,
+produce role-specific testing pathways that a reviewer can follow to verify access control behavior.
+
+Each pathway targets a specific user role and lists:
+- Which routes/pages are accessible to that role
+- Which routes/pages should be restricted
+- Step-by-step testing actions with expected outcomes
+
+Respond with a JSON object matching this exact schema:
+{{
+  "pathways": [
+    {{
+      "role": "<role name, e.g. admin, supplier, buyer>",
+      "description": "<1-sentence description of what this role should be able to do>",
+      "login_hint": "<how to log in as this role, e.g. test credentials or method>",
+      "accessible_routes": ["<route or page this role CAN access>"],
+      "restricted_routes": ["<route or page this role should NOT access>"],
+      "steps": [
+        {{
+          "action": "<what to do, e.g. Navigate to /admin/users>",
+          "expected": "<what should happen, e.g. Page loads with user list>",
+          "url": "<optional URL or route>",
+          "priority": "must" | "should" | "nice-to-have"
+        }}
+      ]
+    }}
+  ]
+}}
+
+Guidelines:
+- Only include roles that are relevant to the changed code
+- Focus steps on verifying the specific changes in this PR
+- Include both positive tests (role CAN do X) and negative tests (role CANNOT do Y)
+- Keep steps actionable and specific
+- Prioritize security-critical checks as "must"
+
+Respond ONLY with the JSON object."""
+
+
+ROLE_TESTING_USER = """## Detected Roles
+{detected_roles}
+
+## Auth Patterns Found
+{auth_patterns}
+
+## Role-Related Code Snippets
+{role_snippets}
+
+## Feature Context (from Notion)
+{notion_summary}
+
+## Changed API Routes
+{api_routes}
+
+## Changed UI Pages
+{ui_pages}"""

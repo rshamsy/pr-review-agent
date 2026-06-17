@@ -7,15 +7,19 @@ import json
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from pr_review_agent.analyzers.role_detector import RoleDetectionResult
 from pr_review_agent.llm.prompts import (
     REVIEW_BRIEF_SYSTEM,
     REVIEW_BRIEF_USER,
+    ROLE_TESTING_SYSTEM,
+    ROLE_TESTING_USER,
     SUMMARIZE_PR_SYSTEM,
     SUMMARIZE_PR_USER,
 )
 from pr_review_agent.models.brief import ReviewBrief
 from pr_review_agent.models.notion import NotionContext
 from pr_review_agent.models.pr import PRAnalysis, PRData
+from pr_review_agent.models.review import RoleTestingPathway
 
 MAX_DIFF_CHARS = 80_000
 
@@ -98,6 +102,65 @@ def generate_brief(
             )
 
     return ReviewBrief(**data)
+
+
+def generate_role_testing(
+    detection: RoleDetectionResult,
+    notion_contexts: list[NotionContext],
+    analysis: PRAnalysis,
+    model: str = "claude-sonnet-4-20250514",
+) -> list[RoleTestingPathway]:
+    """Generate role-based testing pathways using Claude."""
+    llm = ChatAnthropic(model=model, max_tokens=4096, temperature=0)
+
+    # Build notion summary
+    notion_parts: list[str] = []
+    for ctx in notion_contexts:
+        notion_parts.append(f"- {ctx.title}: {ctx.description}")
+    notion_summary = "\n".join(notion_parts) if notion_parts else "No Notion context available."
+
+    # Build route/page lists
+    api_routes = "\n".join(
+        f"- {r.endpoint} ({', '.join(r.methods)})" for r in analysis.api_routes
+    ) or "None"
+    ui_pages = "\n".join(
+        f"- {u.path} ({'new' if u.is_new else 'modified'} {u.type})" for u in analysis.ui_changes
+    ) or "None"
+
+    # Truncate snippets to stay within limits
+    snippets_text = "\n\n---\n\n".join(detection.role_snippets[:15])
+    if len(snippets_text) > 20_000:
+        snippets_text = snippets_text[:20_000] + "\n\n... (truncated)"
+
+    user_msg = ROLE_TESTING_USER.format(
+        detected_roles=", ".join(detection.detected_roles) or "None explicitly detected",
+        auth_patterns=", ".join(detection.auth_patterns) or "None",
+        role_snippets=snippets_text,
+        notion_summary=notion_summary,
+        api_routes=api_routes,
+        ui_pages=ui_pages,
+    )
+
+    try:
+        response = llm.invoke([
+            SystemMessage(content=ROLE_TESTING_SYSTEM),
+            HumanMessage(content=user_msg),
+        ])
+        content = response.content if isinstance(response.content, str) else str(response.content)
+
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            start = content.find("{")
+            end = content.rfind("}") + 1
+            if start >= 0 and end > start:
+                data = json.loads(content[start:end])
+            else:
+                return []
+
+        return [RoleTestingPathway(**p) for p in data.get("pathways", [])]
+    except Exception:
+        return []
 
 
 def _format_notion_contexts(contexts: list[NotionContext]) -> str:

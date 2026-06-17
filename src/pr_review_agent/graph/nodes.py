@@ -18,7 +18,8 @@ from pr_review_agent.github.pr_client import (
     fetch_repo_test_files,
 )
 from pr_review_agent.graph.state import AgentState
-from pr_review_agent.llm.brief_generator import generate_brief, summarize_pr
+from pr_review_agent.analyzers.role_detector import detect_role_patterns
+from pr_review_agent.llm.brief_generator import generate_brief, generate_role_testing, summarize_pr
 from pr_review_agent.models.review import ReviewRecommendation
 from pr_review_agent.notion.client import NotionMCPClient
 from pr_review_agent.notion.context_loop import confirm_context, display_exit_instructions
@@ -237,6 +238,34 @@ def generate_checklist_node(state: AgentState) -> dict:
     console.print(f"  Generated {len(checklist)} checklist items")
 
     return {"testing_checklist": checklist}
+
+
+def generate_role_testing_node(state: AgentState) -> dict:
+    """Detect role/auth patterns and generate role-based testing pathways."""
+    console.print("[bold]Scanning for role/auth patterns...[/bold]")
+
+    detection = detect_role_patterns(state["diff_text"])
+
+    if not detection.has_role_patterns:
+        console.print("  No role/auth patterns detected — skipping role-based testing")
+        return {"role_testing_pathways": []}
+
+    console.print(
+        f"  Found {len(detection.auth_patterns)} auth pattern type(s), "
+        f"{len(detection.detected_roles)} role(s): {', '.join(detection.detected_roles) or 'implicit'}"
+    )
+
+    model = state.get("model", "claude-sonnet-4-20250514")
+    pathways = generate_role_testing(
+        detection=detection,
+        notion_contexts=state.get("notion_contexts", []),
+        analysis=state["pr_analysis"],
+        model=model,
+    )
+
+    console.print(f"  Generated {len(pathways)} role testing pathway(s)")
+
+    return {"role_testing_pathways": pathways}
 
 
 def generate_llm_brief_node(state: AgentState) -> dict:

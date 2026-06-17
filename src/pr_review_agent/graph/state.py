@@ -7,7 +7,7 @@ from typing import TypedDict
 from pr_review_agent.models.brief import ReviewBrief
 from pr_review_agent.models.notion import NotionContext, NotionSearchResult, RelevanceScore
 from pr_review_agent.models.pr import PRAnalysis, PRData
-from pr_review_agent.models.review import ReviewRecommendation, TestingChecklistItem
+from pr_review_agent.models.review import ReviewRecommendation, RoleTestingPathway, TestingChecklistItem
 
 
 class AgentState(TypedDict, total=False):
@@ -25,6 +25,7 @@ class AgentState(TypedDict, total=False):
     user_provided_url: str | None
     pr_analysis: PRAnalysis
     testing_checklist: list[TestingChecklistItem]
+    role_testing_pathways: list[RoleTestingPathway]
     review_brief: ReviewBrief
     recommendation: ReviewRecommendation
     markdown_comment: str
